@@ -1,9 +1,20 @@
-import torch
+import csv
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pytest
-from data.heatmap import generate_heatmap
+import torch
+from torch.utils.data import DataLoader
+
 from data.dataset import TrackNetDataset
-from data.transforms import HorizontalFlip, FrameColorJitter, Mixup, Compose
+from data.heatmap import generate_heatmap
+from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
+
+
+# ---------------------------------------------------------------------------
+# Heatmap
+# ---------------------------------------------------------------------------
 
 
 class TestGenerateHeatmap:
@@ -40,6 +51,26 @@ class TestGenerateHeatmap:
         heatmap = generate_heatmap(x=200, y=100, visibility=1, height=288, width=512, radius=30)
         unique_vals = torch.unique(heatmap)
         assert all(v in (0.0, 1.0) for v in unique_vals)
+
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+
+
+def _write_sample_dataset(
+    frames_dir: Path, csv_path: Path, labels: list[tuple[int, int, int, int]],
+) -> None:
+    """Write synthetic frames and a CSV label file for testing."""
+    frames_dir.mkdir(exist_ok=True)
+    for frame_idx, vis, bx, by in labels:
+        img = np.random.randint(0, 256, (288, 512, 3), dtype=np.uint8)
+        cv2.imwrite(str(frames_dir / f"{frame_idx:05d}.jpg"), img)
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Frame", "Visibility", "X", "Y"])
+        for row in labels:
+            writer.writerow(row)
 
 
 class TestTrackNetDataset:
@@ -85,22 +116,13 @@ class TestTrackNetDataset:
             assert heatmaps.shape == (3, 288, 512)
 
 
-import csv
-import cv2
-
-
 class TestDatasetBoundaryPadding:
     def test_single_frame_dataset(self, tmp_path):
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-        img = np.random.randint(0, 256, (288, 512, 3), dtype=np.uint8)
-        cv2.imwrite(str(frames_dir / "00000.jpg"), img)
-        csv_path = tmp_path / "labels.csv"
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Frame", "Visibility", "X", "Y"])
-            writer.writerow([0, 1, 256, 144])
-        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        _write_sample_dataset(
+            tmp_path / "frames", tmp_path / "labels.csv",
+            labels=[(0, 1, 256, 144)],
+        )
+        ds = TrackNetDataset(frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv")
         assert len(ds) == 1
         frames, heatmaps = ds[0]
         assert frames.shape == (9, 288, 512)
@@ -108,24 +130,21 @@ class TestDatasetBoundaryPadding:
         assert torch.equal(frames[:3], frames[6:9])
 
     def test_four_frames_produces_two_samples(self, tmp_path):
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
-        labels = []
-        for i in range(4):
-            img = np.random.randint(0, 256, (288, 512, 3), dtype=np.uint8)
-            cv2.imwrite(str(frames_dir / f"{i:05d}.jpg"), img)
-            labels.append((i, 1, 100 + i * 10, 80 + i * 5))
-        csv_path = tmp_path / "labels.csv"
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Frame", "Visibility", "X", "Y"])
-            for row in labels:
-                writer.writerow(row)
-        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        labels = [(i, 1, 100 + i * 10, 80 + i * 5) for i in range(4)]
+        _write_sample_dataset(
+            tmp_path / "frames", tmp_path / "labels.csv",
+            labels=labels,
+        )
+        ds = TrackNetDataset(frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv")
         assert len(ds) == 2
         frames, heatmaps = ds[1]
         assert frames.shape == (9, 288, 512)
         assert torch.equal(frames[3:6], frames[6:9])
+
+
+# ---------------------------------------------------------------------------
+# Transforms
+# ---------------------------------------------------------------------------
 
 
 class TestHorizontalFlip:
@@ -230,21 +249,23 @@ class TestCompose:
         assert torch.allclose(h_out, heatmaps)
 
 
+# ---------------------------------------------------------------------------
+# Integration
+# ---------------------------------------------------------------------------
+
+
 class TestPackageImports:
     def test_imports(self):
         from data import (
-            TrackNetDataset,
-            generate_heatmap,
             Compose,
             FrameColorJitter,
             HorizontalFlip,
             Mixup,
+            TrackNetDataset,
+            generate_heatmap,
         )
         assert TrackNetDataset is not None
         assert generate_heatmap is not None
-
-
-from torch.utils.data import DataLoader
 
 
 class TestDataLoader:
