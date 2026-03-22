@@ -69,3 +69,35 @@ class UpBlock(nn.Module):
         x = self.conv1(x)
         x = self.conv2(x)
         return x
+
+
+class UNetBackbone(nn.Module):
+    """V2 U-Net encoder-decoder with skip connections and sigmoid output head."""
+
+    def __init__(self, in_channels: int = 9, num_classes: int = 3) -> None:
+        super().__init__()
+        self.down1 = DownBlock(in_channels, 64)
+        self.down2 = DownBlock(64, 128)
+        self.down3 = DownBlock(128, 256)
+        self.bottleneck = Bottleneck(256, 512)
+        self.up1 = UpBlock(512 + 256, 256)
+        self.up2 = UpBlock(256 + 128, 128)
+        self.up3 = UpBlock(128 + 64, 64)
+        self.head = nn.Conv2d(64, num_classes, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+        self._init_head()
+
+    def _init_head(self) -> None:
+        nn.init.kaiming_uniform_(self.head.weight, nonlinearity="relu")
+        if self.head.bias is not None:
+            nn.init.zeros_(self.head.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        d1, skip1 = self.down1(x)
+        d2, skip2 = self.down2(d1)
+        d3, skip3 = self.down3(d2)
+        b = self.bottleneck(d3)
+        u1 = self.up1(b, skip3)
+        u2 = self.up2(u1, skip2)
+        u3 = self.up3(u2, skip1)
+        return self.sigmoid(self.head(u3))

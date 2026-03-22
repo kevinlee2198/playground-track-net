@@ -1,5 +1,5 @@
 import torch
-from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock
+from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
 
 
 class TestConvBlock:
@@ -98,3 +98,39 @@ class TestUpBlock:
         block = UpBlock(in_channels=768, out_channels=256)
         assert isinstance(block.conv1, ConvBlock)
         assert isinstance(block.conv2, ConvBlock)
+
+
+class TestUNetBackbone:
+    def test_output_shape(self):
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        x = torch.randn(2, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (2, 3, 288, 512)
+
+    def test_output_range_sigmoid(self):
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_v5_input_channels(self):
+        model = UNetBackbone(in_channels=13, num_classes=3)
+        x = torch.randn(1, 13, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+
+    def test_encoder_decoder_structure(self):
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        assert isinstance(model.down1, DownBlock)
+        assert isinstance(model.down2, DownBlock)
+        assert isinstance(model.down3, DownBlock)
+        assert isinstance(model.bottleneck, Bottleneck)
+        assert isinstance(model.up1, UpBlock)
+        assert isinstance(model.up2, UpBlock)
+        assert isinstance(model.up3, UpBlock)
+
+    def test_parameter_count_reasonable(self):
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        total = sum(p.numel() for p in model.parameters())
+        assert 1_000_000 < total < 50_000_000
