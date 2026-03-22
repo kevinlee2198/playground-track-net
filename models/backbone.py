@@ -14,8 +14,6 @@ class ConvBlock(nn.Module):
 
     def _init_weights(self) -> None:
         nn.init.kaiming_uniform_(self.conv.weight, nonlinearity="relu")
-        nn.init.ones_(self.norm.weight)
-        nn.init.zeros_(self.norm.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.relu(self.norm(self.conv(x)))
@@ -33,9 +31,7 @@ class DownBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.conv1(x)
         x = self.conv2(x)
-        skip = x
-        pooled = self.pool(x)
-        return pooled, skip
+        return self.pool(x), x
 
 
 class Bottleneck(nn.Module):
@@ -50,8 +46,7 @@ class Bottleneck(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv1(x)
         x = self.conv2(x)
-        x = self.conv3(x)
-        return x
+        return self.conv3(x)
 
 
 class UpBlock(nn.Module):
@@ -65,10 +60,12 @@ class UpBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.up(x)
+        # Guard against spatial mismatch from odd input dimensions
+        if x.shape[2:] != skip.shape[2:]:
+            x = x[:, :, : skip.shape[2], : skip.shape[3]]
         x = torch.cat([x, skip], dim=1)
         x = self.conv1(x)
-        x = self.conv2(x)
-        return x
+        return self.conv2(x)
 
 
 class UNetBackbone(nn.Module):

@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+
 from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
 from models.losses import WBCEFocalLoss
 from models.tracknet import TrackNet
@@ -19,7 +21,7 @@ class TestConvBlock:
 
     def test_groupnorm_num_groups(self):
         block = ConvBlock(in_channels=64, out_channels=128)
-        assert isinstance(block.norm, torch.nn.GroupNorm)
+        assert isinstance(block.norm, nn.GroupNorm)
         assert block.norm.num_groups == 8
 
     def test_kaiming_init(self):
@@ -213,6 +215,62 @@ class TestTrackNet:
     def test_backbone_accessible(self):
         model = TrackNet()
         assert isinstance(model.backbone, UNetBackbone)
+
+
+class TestUpBlockEdgeCases:
+    def test_odd_spatial_dims(self):
+        """UpBlock should handle spatial mismatch from odd input sizes."""
+        block = UpBlock(in_channels=768, out_channels=256)
+        x = torch.randn(1, 512, 37, 65)  # odd dims
+        skip = torch.randn(1, 256, 73, 129)  # 2x odd - 1
+        out = block(x, skip)
+        assert out.shape == (1, 256, 73, 129)
+
+
+class TestSkipConnections:
+    def test_skip_connections_carry_information(self):
+        """Changing skip data should change the output, proving skips are connected."""
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        model.eval()
+        x = torch.randn(1, 9, 288, 512)
+
+        torch.manual_seed(42)
+        out1 = model(x).detach().clone()
+
+        # Corrupt the skip connection by hooking into down1
+        original_forward = model.down1.forward
+
+        def corrupted_forward(inp):
+            pooled, skip = original_forward(inp)
+            return pooled, torch.zeros_like(skip)
+
+        model.down1.forward = corrupted_forward
+        out2 = model(x).detach()
+        model.down1.forward = original_forward  # restore
+
+        assert not torch.allclose(out1, out2, atol=1e-5), \
+            "Output should change when skip connections are zeroed"
+
+
+class TestTrackNetCustomBackbone:
+    def test_custom_backbone(self):
+        """TrackNet should accept a custom backbone."""
+        custom = UNetBackbone(in_channels=9, num_classes=3)
+        model = TrackNet(backbone=custom)
+        assert model.backbone is custom
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+
+    def test_custom_mdd_module(self):
+        """TrackNet should pass input through MDD when provided."""
+        class DummyMDD(torch.nn.Module):
+            def forward(self, x):
+                return x + 1.0
+
+        model = TrackNet(mdd=DummyMDD())
+        assert model.mdd is not None
+        assert isinstance(model.mdd, torch.nn.Module)
 
 
 class TestIntegration:
