@@ -52,3 +52,20 @@ class Bottleneck(nn.Module):
         x = self.conv2(x)
         x = self.conv3(x)
         return x
+
+
+class UpBlock(nn.Module):
+    """Upsample2x + skip concat + 2x ConvBlock."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.conv1 = ConvBlock(in_channels, out_channels)
+        self.conv2 = ConvBlock(out_channels, out_channels)
+
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        x = self.up(x)
+        x = torch.cat([x, skip], dim=1)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        return x
