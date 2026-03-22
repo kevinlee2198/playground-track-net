@@ -64,10 +64,12 @@ def _extract_from_video(video_path: Path) -> tuple[list[np.ndarray], dict]:
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     metadata = {
         "original_width": w,
         "original_height": h,
         "frame_count": frame_count,
+        "fps": fps,
     }
 
     frames = []

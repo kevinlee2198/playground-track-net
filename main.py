@@ -3,11 +3,9 @@ import csv
 import sys
 from pathlib import Path
 
-import torch
-
-from inference.video_preprocess import create_sliding_windows, extract_frames
 from inference.postprocess import heatmap_to_coordinates, trajectory_rectification
 from inference.tracker import KalmanBallTracker
+from inference.video_preprocess import create_sliding_windows, extract_frames
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,6 +74,8 @@ def run_inference(args: argparse.Namespace) -> None:
     print(f"Created {len(windows)} sliding windows")
 
     # 3. Load model
+    import torch
+
     print(f"Loading model from {args.model}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Model loading assumes models/tracknet.py exists and provides TrackNet class
@@ -115,14 +115,20 @@ def run_inference(args: argparse.Namespace) -> None:
 
     # 6. Kalman smoothing
     tracker = KalmanBallTracker()
+    consecutive_missing = 0
+    max_gap_before_reset = 10
     final_results = []
     for i, det in enumerate(all_detections):
         confidence = det[2] if det is not None else 0.0
         pos = rectified[i]
         if pos is not None:
+            consecutive_missing = 0
             sx, sy = tracker.update(pos[0], pos[1])
             visibility = 1
         else:
+            consecutive_missing += 1
+            if consecutive_missing >= max_gap_before_reset:
+                tracker.reset()
             sx, sy = 0.0, 0.0
             visibility = 0
         final_results.append(
@@ -162,8 +168,9 @@ def run_inference(args: argparse.Namespace) -> None:
         from utils.visualization import draw_ball_on_frame
 
         cap = cv2.VideoCapture(args.video)
+        fps = metadata.get("fps", 30.0)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(args.output_video, fourcc, 30.0, (orig_w, orig_h))
+        out = cv2.VideoWriter(args.output_video, fourcc, fps, (orig_w, orig_h))
 
         for r in final_results:
             ret, frame = cap.read()
