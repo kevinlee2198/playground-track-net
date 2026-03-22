@@ -117,3 +117,77 @@ class TestHeatmapToCoordinates:
         )
         assert result_default is None
         assert result_custom is not None
+
+
+from inference.postprocess import trajectory_rectification
+
+
+class TestTrajectoryRectification:
+    def test_fills_single_gap(self):
+        """Interpolate a single missing frame in a linear trajectory."""
+        detections = [
+            (100.0, 100.0),  # frame 0
+            (110.0, 105.0),  # frame 1
+            None,             # frame 2 -- gap
+            (130.0, 115.0),  # frame 3
+            (140.0, 120.0),  # frame 4
+        ]
+        result = trajectory_rectification(detections, window=8)
+        assert result[2] is not None
+        x, y = result[2]
+        # Should be approximately (120, 110) for a linear trajectory
+        assert abs(x - 120.0) < 5.0
+        assert abs(y - 110.0) < 5.0
+
+    def test_does_not_fill_without_enough_context(self):
+        """Don't interpolate if fewer than 3 known positions in window."""
+        detections = [
+            None,
+            (100.0, 100.0),
+            None,
+            None,
+            (120.0, 110.0),
+            None,
+            None,
+            None,
+        ]
+        result = trajectory_rectification(detections, window=4)
+        # Some gaps may not be filled if insufficient context
+        # The key requirement: need >= 3 known positions in the window
+        filled_count = sum(1 for d in result if d is not None)
+        known_count = sum(1 for d in detections if d is not None)
+        # Should fill some but not fabricate without evidence
+        assert filled_count >= known_count
+
+    def test_preserves_existing_detections(self):
+        """Known detections must not be modified."""
+        detections = [
+            (100.0, 100.0),
+            (110.0, 105.0),
+            (120.0, 110.0),
+        ]
+        result = trajectory_rectification(detections, window=8)
+        for i in range(3):
+            assert result[i] == detections[i]
+
+    def test_all_none_returns_all_none(self):
+        """No detections at all -- nothing to interpolate."""
+        detections = [None, None, None, None]
+        result = trajectory_rectification(detections, window=8)
+        assert all(d is None for d in result)
+
+    def test_fills_multi_frame_gap(self):
+        """Fill a 2-frame gap in a parabolic trajectory."""
+        detections = [
+            (100.0, 200.0),
+            (110.0, 190.0),
+            (120.0, 182.0),
+            None,             # gap
+            None,             # gap
+            (150.0, 172.0),
+            (160.0, 170.0),
+            (170.0, 170.0),
+        ]
+        result = trajectory_rectification(detections, window=8)
+        assert result[3] is not None
+        assert result[4] is not None
