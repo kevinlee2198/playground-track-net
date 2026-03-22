@@ -1,6 +1,7 @@
 import torch
 from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
 from models.losses import WBCEFocalLoss
+from models.tracknet import TrackNet
 
 
 class TestConvBlock:
@@ -188,3 +189,27 @@ class TestWBCEFocalLoss:
         loss.backward()
         assert raw.grad is not None
         assert raw.grad.abs().sum() > 0
+
+
+class TestTrackNet:
+    def test_v2_forward(self):
+        model = TrackNet()
+        x = torch.randn(2, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (2, 3, 288, 512)
+
+    def test_output_range(self):
+        model = TrackNet()
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_mdd_slot_none(self):
+        model = TrackNet()
+        assert model.mdd is None
+        assert model.rstr is None
+
+    def test_backbone_accessible(self):
+        model = TrackNet()
+        assert isinstance(model.backbone, UNetBackbone)
