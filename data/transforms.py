@@ -14,7 +14,9 @@ class HorizontalFlip:
     def __init__(self, p: float = 0.5) -> None:
         self.p = p
 
-    def __call__(self, frames: torch.Tensor, heatmaps: torch.Tensor) -> FrameHeatmapPair:
+    def __call__(
+        self, frames: torch.Tensor, heatmaps: torch.Tensor
+    ) -> FrameHeatmapPair:
         if torch.rand(1).item() < self.p:
             frames = frames.flip(-1)
             heatmaps = heatmaps.flip(-1)
@@ -31,13 +33,16 @@ class FrameColorJitter:
         saturation: float = 0.3,
     ) -> None:
         self.jitter = T.ColorJitter(
-            brightness=brightness, contrast=contrast, saturation=saturation,
+            brightness=brightness,
+            contrast=contrast,
+            saturation=saturation,
         )
 
-    def __call__(self, frames: torch.Tensor, heatmaps: torch.Tensor) -> FrameHeatmapPair:
+    def __call__(
+        self, frames: torch.Tensor, heatmaps: torch.Tensor
+    ) -> FrameHeatmapPair:
         jittered = [
-            self.jitter(frame).clamp(0.0, 1.0)
-            for frame in frames.chunk(3, dim=0)
+            self.jitter(frame).clamp(0.0, 1.0) for frame in frames.chunk(3, dim=0)
         ]
         return torch.cat(jittered, dim=0), heatmaps
 
@@ -67,7 +72,9 @@ class Compose:
     def __init__(self, transforms: list[Callable[..., FrameHeatmapPair]]) -> None:
         self.transforms = transforms
 
-    def __call__(self, frames: torch.Tensor, heatmaps: torch.Tensor) -> FrameHeatmapPair:
+    def __call__(
+        self, frames: torch.Tensor, heatmaps: torch.Tensor
+    ) -> FrameHeatmapPair:
         for t in self.transforms:
             frames, heatmaps = t(frames, heatmaps)
         return frames, heatmaps

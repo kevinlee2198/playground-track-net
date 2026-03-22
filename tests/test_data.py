@@ -3,7 +3,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pytest
 import torch
 from torch.utils.data import DataLoader
 
@@ -19,36 +18,50 @@ from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
 
 class TestGenerateHeatmap:
     def test_visible_ball_returns_circle(self):
-        heatmap = generate_heatmap(x=256, y=144, visibility=1, height=288, width=512, radius=30)
+        heatmap = generate_heatmap(
+            x=256, y=144, visibility=1, height=288, width=512, radius=30
+        )
         assert heatmap.shape == (288, 512)
         assert heatmap.dtype == torch.float32
         assert heatmap[144, 256] == 1.0
         assert heatmap[0, 0] == 0.0
 
     def test_invisible_ball_returns_zeros(self):
-        heatmap = generate_heatmap(x=0, y=0, visibility=0, height=288, width=512, radius=30)
+        heatmap = generate_heatmap(
+            x=0, y=0, visibility=0, height=288, width=512, radius=30
+        )
         assert heatmap.shape == (288, 512)
         assert heatmap.sum() == 0.0
 
     def test_partially_occluded_still_labeled(self):
-        heatmap = generate_heatmap(x=100, y=100, visibility=2, height=288, width=512, radius=30)
+        heatmap = generate_heatmap(
+            x=100, y=100, visibility=2, height=288, width=512, radius=30
+        )
         assert heatmap[100, 100] == 1.0
         assert heatmap.sum() > 0.0
 
     def test_circle_radius(self):
-        heatmap = generate_heatmap(x=256, y=144, visibility=1, height=288, width=512, radius=30)
+        heatmap = generate_heatmap(
+            x=256, y=144, visibility=1, height=288, width=512, radius=30
+        )
         assert heatmap[144, 256 + 30] == 1.0
         assert heatmap[144, 256 + 31] == 0.0
 
     def test_ball_at_edge_clips_to_image(self):
-        heatmap = generate_heatmap(x=5, y=5, visibility=1, height=288, width=512, radius=30)
+        heatmap = generate_heatmap(
+            x=5, y=5, visibility=1, height=288, width=512, radius=30
+        )
         assert heatmap.shape == (288, 512)
         assert heatmap[5, 5] == 1.0
-        centered = generate_heatmap(x=256, y=144, visibility=1, height=288, width=512, radius=30)
+        centered = generate_heatmap(
+            x=256, y=144, visibility=1, height=288, width=512, radius=30
+        )
         assert heatmap.sum() < centered.sum()
 
     def test_values_are_binary(self):
-        heatmap = generate_heatmap(x=200, y=100, visibility=1, height=288, width=512, radius=30)
+        heatmap = generate_heatmap(
+            x=200, y=100, visibility=1, height=288, width=512, radius=30
+        )
         unique_vals = torch.unique(heatmap)
         assert all(v in (0.0, 1.0) for v in unique_vals)
 
@@ -59,7 +72,9 @@ class TestGenerateHeatmap:
 
 
 def _write_sample_dataset(
-    frames_dir: Path, csv_path: Path, labels: list[tuple[int, int, int, int]],
+    frames_dir: Path,
+    csv_path: Path,
+    labels: list[tuple[int, int, int, int]],
 ) -> None:
     """Write synthetic frames and a CSV label file for testing."""
     frames_dir.mkdir(exist_ok=True)
@@ -119,10 +134,13 @@ class TestTrackNetDataset:
 class TestDatasetBoundaryPadding:
     def test_single_frame_dataset(self, tmp_path):
         _write_sample_dataset(
-            tmp_path / "frames", tmp_path / "labels.csv",
+            tmp_path / "frames",
+            tmp_path / "labels.csv",
             labels=[(0, 1, 256, 144)],
         )
-        ds = TrackNetDataset(frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv")
+        ds = TrackNetDataset(
+            frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv"
+        )
         assert len(ds) == 1
         frames, heatmaps = ds[0]
         assert frames.shape == (9, 288, 512)
@@ -132,10 +150,13 @@ class TestDatasetBoundaryPadding:
     def test_four_frames_produces_two_samples(self, tmp_path):
         labels = [(i, 1, 100 + i * 10, 80 + i * 5) for i in range(4)]
         _write_sample_dataset(
-            tmp_path / "frames", tmp_path / "labels.csv",
+            tmp_path / "frames",
+            tmp_path / "labels.csv",
             labels=labels,
         )
-        ds = TrackNetDataset(frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv")
+        ds = TrackNetDataset(
+            frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv"
+        )
         assert len(ds) == 2
         frames, heatmaps = ds[1]
         assert frames.shape == (9, 288, 512)
@@ -257,13 +278,10 @@ class TestCompose:
 class TestPackageImports:
     def test_imports(self):
         from data import (
-            Compose,
-            FrameColorJitter,
-            HorizontalFlip,
-            Mixup,
             TrackNetDataset,
             generate_heatmap,
         )
+
         assert TrackNetDataset is not None
         assert generate_heatmap is not None
 
@@ -285,7 +303,9 @@ class TestDatasetWithTransform:
         frames_dir, csv_path = sample_frames_dir
         flip = HorizontalFlip(p=1.0)
         ds_no_flip = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
-        ds_flip = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path, transform=flip)
+        ds_flip = TrackNetDataset(
+            frames_dir=frames_dir, label_path=csv_path, transform=flip
+        )
         frames_orig, heatmaps_orig = ds_no_flip[0]
         frames_flip, heatmaps_flip = ds_flip[0]
         assert torch.equal(frames_flip, frames_orig.flip(-1))

@@ -248,8 +248,9 @@ class TestSkipConnections:
         out2 = model(x).detach()
         model.down1.forward = original_forward  # restore
 
-        assert not torch.allclose(out1, out2, atol=1e-5), \
+        assert not torch.allclose(out1, out2, atol=1e-5), (
             "Output should change when skip connections are zeroed"
+        )
 
 
 class TestTrackNetCustomBackbone:
@@ -264,6 +265,7 @@ class TestTrackNetCustomBackbone:
 
     def test_custom_mdd_module(self):
         """TrackNet should pass input through MDD when provided."""
+
         class DummyMDD(torch.nn.Module):
             def forward(self, x):
                 return x + 1.0

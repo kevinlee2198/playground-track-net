@@ -18,7 +18,11 @@ class TrackNet(nn.Module):
         rstr: nn.Module | None = None,
     ) -> None:
         super().__init__()
-        self.backbone = backbone if backbone is not None else UNetBackbone(in_channels=9, num_classes=3)
+        self.backbone = (
+            backbone
+            if backbone is not None
+            else UNetBackbone(in_channels=9, num_classes=3)
+        )
         self.mdd = mdd
         self.rstr = rstr
 

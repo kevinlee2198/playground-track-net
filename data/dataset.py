@@ -51,8 +51,7 @@ class TrackNetDataset(Dataset):
         start = idx * FRAMES_PER_SAMPLE
         last = self.num_frames - 1
         frame_indices = [
-            min(max(start + offset, 0), last)
-            for offset in range(FRAMES_PER_SAMPLE)
+            min(max(start + offset, 0), last) for offset in range(FRAMES_PER_SAMPLE)
         ]
 
         frame_tensors = []

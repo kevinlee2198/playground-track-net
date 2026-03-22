@@ -17,7 +17,7 @@ class WBCEFocalLoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         p = pred.clamp(self.eps, 1.0 - self.eps)
         pos_weight = (1.0 - p) ** 2
-        neg_weight = p ** 2
+        neg_weight = p**2
         loss = -(
             pos_weight * target * torch.log(p)
             + neg_weight * (1.0 - target) * torch.log(1.0 - p)

@@ -62,9 +62,7 @@ def compute_detection_metrics(
         return 0, 1, 1  # Both FP and FN
 
 
-def aggregate_metrics(
-    tp: int, fp: int, fn: int
-) -> dict[str, float]:
+def aggregate_metrics(tp: int, fp: int, fn: int) -> dict[str, float]:
     """Compute precision, recall, and F1 from TP/FP/FN counts."""
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0

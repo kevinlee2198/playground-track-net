@@ -7,7 +7,9 @@ class ConvBlock(nn.Module):
 
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, padding=1, bias=False
+        )
         self.norm = nn.GroupNorm(num_groups=8, num_channels=out_channels)
         self.relu = nn.ReLU(inplace=True)
         self._init_weights()

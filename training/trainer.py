@@ -27,9 +27,7 @@ class Trainer:
         config: dict,
     ) -> None:
         self.config = config
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Reproducibility
         self._set_seed(config["seed"])
@@ -45,9 +43,7 @@ class Trainer:
         # DataLoaders
         loader_workers = config.get("num_workers", 4)
         use_persistent = (
-            config.get("persistent_workers", True)
-            if loader_workers > 0
-            else False
+            config.get("persistent_workers", True) if loader_workers > 0 else False
         )
         self.train_loader = DataLoader(
             train_dataset,
@@ -125,9 +121,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             if self.amp_dtype is not None:
-                with torch.amp.autocast(
-                    self.device.type, dtype=self.amp_dtype
-                ):
+                with torch.amp.autocast(self.device.type, dtype=self.amp_dtype):
                     preds = self.model(frames)
                     loss = self.loss_fn(preds, heatmaps)
             else:
@@ -159,9 +153,7 @@ class Trainer:
 
     def load_checkpoint(self, path: str) -> None:
         """Load a checkpoint from disk."""
-        checkpoint = torch.load(
-            path, map_location=self.device, weights_only=True
-        )
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -183,21 +175,15 @@ class Trainer:
                 self.model,
                 self.val_loader,
                 self.device,
-                detection_threshold=self.config.get(
-                    "detection_threshold", 0.5
-                ),
-                distance_threshold=self.config.get(
-                    "distance_threshold", 4.0
-                ),
+                detection_threshold=self.config.get("detection_threshold", 0.5),
+                distance_threshold=self.config.get("distance_threshold", 4.0),
             )
 
             # LR step
             self.scheduler.step()
 
             # Log to TensorBoard
-            self.writer.add_scalar(
-                "Loss/train", train_loss, self.current_epoch
-            )
+            self.writer.add_scalar("Loss/train", train_loss, self.current_epoch)
             self.writer.add_scalar(
                 "Metrics/precision",
                 val_metrics["precision"],
@@ -208,9 +194,7 @@ class Trainer:
                 val_metrics["recall"],
                 self.current_epoch,
             )
-            self.writer.add_scalar(
-                "Metrics/f1", val_metrics["f1"], self.current_epoch
-            )
+            self.writer.add_scalar("Metrics/f1", val_metrics["f1"], self.current_epoch)
             self.writer.add_scalar(
                 "LR",
                 self.scheduler.get_last_lr()[0],

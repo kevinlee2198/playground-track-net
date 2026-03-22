@@ -81,7 +81,9 @@ def _make_synthetic_dataset(num_samples=4, h=32, w=64):
     return TensorDataset(frames, heatmaps)
 
 
-def _make_test_config(tmpdir: str, epochs: int = 1, experiment_name: str = "test") -> dict:
+def _make_test_config(
+    tmpdir: str, epochs: int = 1, experiment_name: str = "test"
+) -> dict:
     """Create a test training config (CPU, no AMP, no compile)."""
     return {
         "optimizer": "AdamW",
@@ -111,7 +113,9 @@ def _make_test_config(tmpdir: str, epochs: int = 1, experiment_name: str = "test
 
 
 def test_config_loads_from_yaml():
-    config_path = os.path.join(os.path.dirname(__file__), "..", "configs", "default.yaml")
+    config_path = os.path.join(
+        os.path.dirname(__file__), "..", "configs", "default.yaml"
+    )
     with open(config_path) as f:
         config = yaml.safe_load(f)
     assert config["optimizer"] == "AdamW"
@@ -213,16 +217,20 @@ def test_aggregate_metrics_zero_division():
 
 
 def test_evaluate_epoch_all_tp():
-    gt1 = torch.stack([
-        _make_synthetic_heatmap(100, 150),
-        _make_synthetic_heatmap(200, 100),
-        _make_synthetic_heatmap(300, 200),
-    ])
-    gt2 = torch.stack([
-        _make_synthetic_heatmap(50, 50),
-        _make_synthetic_heatmap(400, 250),
-        _make_synthetic_heatmap(250, 144),
-    ])
+    gt1 = torch.stack(
+        [
+            _make_synthetic_heatmap(100, 150),
+            _make_synthetic_heatmap(200, 100),
+            _make_synthetic_heatmap(300, 200),
+        ]
+    )
+    gt2 = torch.stack(
+        [
+            _make_synthetic_heatmap(50, 50),
+            _make_synthetic_heatmap(400, 250),
+            _make_synthetic_heatmap(250, 144),
+        ]
+    )
     frames = torch.randn(2, 9, 288, 512)
     gt_heatmaps = torch.stack([gt1, gt2])
     dataset = TensorDataset(frames, gt_heatmaps)
@@ -293,10 +301,8 @@ def test_training_package_imports():
     from training import (
         Trainer,
         heatmap_to_position,
-        compute_detection_metrics,
-        aggregate_metrics,
-        evaluate_epoch,
     )
+
     assert Trainer is not None
     assert heatmap_to_position is not None
 
