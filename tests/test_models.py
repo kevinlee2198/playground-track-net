@@ -1,5 +1,5 @@
 import torch
-from models.backbone import ConvBlock
+from models.backbone import ConvBlock, DownBlock
 
 
 class TestConvBlock:
@@ -28,3 +28,31 @@ class TestConvBlock:
         block = ConvBlock(in_channels=64, out_channels=128)
         assert torch.allclose(block.norm.weight, torch.ones_like(block.norm.weight))
         assert torch.allclose(block.norm.bias, torch.zeros_like(block.norm.bias))
+
+
+class TestDownBlock:
+    def test_output_shapes(self):
+        block = DownBlock(in_channels=9, out_channels=64)
+        x = torch.randn(2, 9, 288, 512)
+        pooled, skip = block(x)
+        assert skip.shape == (2, 64, 288, 512)
+        assert pooled.shape == (2, 64, 144, 256)
+
+    def test_down2_shapes(self):
+        block = DownBlock(in_channels=64, out_channels=128)
+        x = torch.randn(2, 64, 144, 256)
+        pooled, skip = block(x)
+        assert skip.shape == (2, 128, 144, 256)
+        assert pooled.shape == (2, 128, 72, 128)
+
+    def test_down3_shapes(self):
+        block = DownBlock(in_channels=128, out_channels=256)
+        x = torch.randn(2, 128, 72, 128)
+        pooled, skip = block(x)
+        assert skip.shape == (2, 256, 72, 128)
+        assert pooled.shape == (2, 256, 36, 64)
+
+    def test_has_two_conv_blocks(self):
+        block = DownBlock(in_channels=9, out_channels=64)
+        assert isinstance(block.conv1, ConvBlock)
+        assert isinstance(block.conv2, ConvBlock)

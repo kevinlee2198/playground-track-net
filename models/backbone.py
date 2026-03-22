@@ -19,3 +19,20 @@ class ConvBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.relu(self.norm(self.conv(x)))
+
+
+class DownBlock(nn.Module):
+    """2x ConvBlock + MaxPool2x2. Returns (pooled, skip)."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.conv1 = ConvBlock(in_channels, out_channels)
+        self.conv2 = ConvBlock(out_channels, out_channels)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self.conv1(x)
+        x = self.conv2(x)
+        skip = x
+        pooled = self.pool(x)
+        return pooled, skip
