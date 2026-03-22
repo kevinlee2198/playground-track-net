@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from data.heatmap import generate_heatmap
 from data.dataset import TrackNetDataset
+from data.transforms import HorizontalFlip
 
 
 class TestGenerateHeatmap:
@@ -125,3 +126,29 @@ class TestDatasetBoundaryPadding:
         frames, heatmaps = ds[1]
         assert frames.shape == (9, 288, 512)
         assert torch.equal(frames[3:6], frames[6:9])
+
+
+class TestHorizontalFlip:
+    def test_flip_reverses_width_dimension(self):
+        frames = torch.arange(9 * 4 * 6, dtype=torch.float32).reshape(9, 4, 6)
+        heatmaps = torch.arange(3 * 4 * 6, dtype=torch.float32).reshape(3, 4, 6)
+        flip = HorizontalFlip(p=1.0)
+        f_frames, f_heatmaps = flip(frames, heatmaps)
+        assert torch.equal(f_frames, frames.flip(-1))
+        assert torch.equal(f_heatmaps, heatmaps.flip(-1))
+
+    def test_no_flip_when_p_zero(self):
+        frames = torch.randn(9, 288, 512)
+        heatmaps = torch.randn(3, 288, 512)
+        flip = HorizontalFlip(p=0.0)
+        f_frames, f_heatmaps = flip(frames, heatmaps)
+        assert torch.equal(f_frames, frames)
+        assert torch.equal(f_heatmaps, heatmaps)
+
+    def test_shapes_preserved(self):
+        frames = torch.randn(9, 288, 512)
+        heatmaps = torch.randn(3, 288, 512)
+        flip = HorizontalFlip(p=1.0)
+        f_frames, f_heatmaps = flip(frames, heatmaps)
+        assert f_frames.shape == frames.shape
+        assert f_heatmaps.shape == heatmaps.shape
