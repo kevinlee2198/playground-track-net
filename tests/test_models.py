@@ -1,5 +1,5 @@
 import torch
-from models.backbone import ConvBlock, DownBlock
+from models.backbone import ConvBlock, DownBlock, Bottleneck
 
 
 class TestConvBlock:
@@ -56,3 +56,17 @@ class TestDownBlock:
         block = DownBlock(in_channels=9, out_channels=64)
         assert isinstance(block.conv1, ConvBlock)
         assert isinstance(block.conv2, ConvBlock)
+
+
+class TestBottleneck:
+    def test_output_shape(self):
+        block = Bottleneck(in_channels=256, out_channels=512)
+        x = torch.randn(2, 256, 36, 64)
+        out = block(x)
+        assert out.shape == (2, 512, 36, 64)
+
+    def test_has_three_conv_blocks(self):
+        block = Bottleneck(in_channels=256, out_channels=512)
+        assert isinstance(block.conv1, ConvBlock)
+        assert isinstance(block.conv2, ConvBlock)
+        assert isinstance(block.conv3, ConvBlock)

@@ -36,3 +36,19 @@ class DownBlock(nn.Module):
         skip = x
         pooled = self.pool(x)
         return pooled, skip
+
+
+class Bottleneck(nn.Module):
+    """3x ConvBlock at the U-Net bottom."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.conv1 = ConvBlock(in_channels, out_channels)
+        self.conv2 = ConvBlock(out_channels, out_channels)
+        self.conv3 = ConvBlock(out_channels, out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        return x
