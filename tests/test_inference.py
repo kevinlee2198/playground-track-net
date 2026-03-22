@@ -1,6 +1,16 @@
+import subprocess
+import sys
+
+import cv2
 import numpy as np
-import pytest
-from inference.video_preprocess import extract_frames, preprocess_frame, create_sliding_windows
+from inference.video_preprocess import (
+    extract_frames,
+    preprocess_frame,
+    create_sliding_windows,
+)
+from inference.postprocess import heatmap_to_coordinates, trajectory_rectification
+from inference.tracker import KalmanBallTracker
+from utils.visualization import draw_ball_on_frame
 
 
 class TestPreprocessFrame:
@@ -55,7 +65,6 @@ class TestCreateSlidingWindows:
 class TestExtractFrames:
     def test_extract_from_image_directory(self, tmp_path):
         """Extract frames from a directory of images."""
-        import cv2
         for i in range(5):
             img = np.random.randint(0, 256, (720, 1280, 3), dtype=np.uint8)
             cv2.imwrite(str(tmp_path / f"frame_{i:04d}.png"), img)
@@ -64,10 +73,6 @@ class TestExtractFrames:
         assert metadata["original_width"] == 1280
         assert metadata["original_height"] == 720
         assert frames[0].shape == (3, 288, 512)
-
-
-import cv2
-from inference.postprocess import heatmap_to_coordinates
 
 
 class TestHeatmapToCoordinates:
@@ -111,15 +116,14 @@ class TestHeatmapToCoordinates:
         """Respects custom threshold parameter."""
         heatmap = np.full((288, 512), 0.4, dtype=np.float32)
         # Below default 0.5 but above 0.3
-        result_default = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
+        result_default = heatmap_to_coordinates(
+            heatmap, orig_width=1280, orig_height=720
+        )
         result_custom = heatmap_to_coordinates(
             heatmap, orig_width=1280, orig_height=720, threshold=0.3
         )
         assert result_default is None
         assert result_custom is not None
-
-
-from inference.postprocess import trajectory_rectification
 
 
 class TestTrajectoryRectification:
@@ -128,7 +132,7 @@ class TestTrajectoryRectification:
         detections = [
             (100.0, 100.0),  # frame 0
             (110.0, 105.0),  # frame 1
-            None,             # frame 2 -- gap
+            None,  # frame 2 -- gap
             (130.0, 115.0),  # frame 3
             (140.0, 120.0),  # frame 4
         ]
@@ -182,8 +186,8 @@ class TestTrajectoryRectification:
             (100.0, 200.0),
             (110.0, 190.0),
             (120.0, 182.0),
-            None,             # gap
-            None,             # gap
+            None,  # gap
+            None,  # gap
             (150.0, 172.0),
             (160.0, 170.0),
             (170.0, 170.0),
@@ -191,9 +195,6 @@ class TestTrajectoryRectification:
         result = trajectory_rectification(detections, window=8)
         assert result[3] is not None
         assert result[4] is not None
-
-
-from utils.visualization import draw_ball_on_frame
 
 
 class TestDrawBallOnFrame:
@@ -234,9 +235,6 @@ class TestDrawBallOnFrame:
         original_sum = frame.sum()
         draw_ball_on_frame(frame, x=640, y=360, confidence=0.9)
         assert frame.sum() == original_sum
-
-
-from inference.tracker import KalmanBallTracker
 
 
 class TestKalmanBallTracker:
@@ -281,10 +279,6 @@ class TestKalmanBallTracker:
         # After reset, predict should return initial position (zeroed)
         x, y = tracker.predict()
         assert x == 0.0 and y == 0.0
-
-
-import subprocess
-import sys
 
 
 class TestCLI:
