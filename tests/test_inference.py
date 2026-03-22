@@ -64,3 +64,56 @@ class TestExtractFrames:
         assert metadata["original_width"] == 1280
         assert metadata["original_height"] == 720
         assert frames[0].shape == (3, 288, 512)
+
+
+import cv2
+from inference.postprocess import heatmap_to_coordinates
+
+
+class TestHeatmapToCoordinates:
+    def test_single_ball(self):
+        """Detect a single ball from a synthetic heatmap."""
+        heatmap = np.zeros((288, 512), dtype=np.float32)
+        # Place a ball-like blob at (256, 144) -- center of heatmap
+        cv2.circle(heatmap, (256, 144), 15, 1.0, -1)
+        result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
+        assert result is not None
+        x, y, confidence = result
+        # Centroid should be near (256, 144), scaled to original resolution
+        expected_x = 256 * (1280 / 512)
+        expected_y = 144 * (720 / 288)
+        assert abs(x - expected_x) < 5.0
+        assert abs(y - expected_y) < 5.0
+        assert confidence > 0.5
+
+    def test_no_ball(self):
+        """Return None when heatmap is below threshold."""
+        heatmap = np.full((288, 512), 0.1, dtype=np.float32)
+        result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
+        assert result is None
+
+    def test_multiple_blobs_picks_largest(self):
+        """When multiple blobs exist, pick the largest connected component."""
+        heatmap = np.zeros((288, 512), dtype=np.float32)
+        # Small blob
+        cv2.circle(heatmap, (100, 50), 5, 1.0, -1)
+        # Large blob -- this should be chosen
+        cv2.circle(heatmap, (300, 200), 20, 1.0, -1)
+        result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
+        assert result is not None
+        x, y, _ = result
+        expected_x = 300 * (1280 / 512)
+        expected_y = 200 * (720 / 288)
+        assert abs(x - expected_x) < 10.0
+        assert abs(y - expected_y) < 10.0
+
+    def test_custom_threshold(self):
+        """Respects custom threshold parameter."""
+        heatmap = np.full((288, 512), 0.4, dtype=np.float32)
+        # Below default 0.5 but above 0.3
+        result_default = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
+        result_custom = heatmap_to_coordinates(
+            heatmap, orig_width=1280, orig_height=720, threshold=0.3
+        )
+        assert result_default is None
+        assert result_custom is not None
