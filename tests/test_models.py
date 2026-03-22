@@ -1,5 +1,6 @@
 import torch
 from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
+from models.losses import WBCEFocalLoss
 
 
 class TestConvBlock:
@@ -134,3 +135,56 @@ class TestUNetBackbone:
         model = UNetBackbone(in_channels=9, num_classes=3)
         total = sum(p.numel() for p in model.parameters())
         assert 1_000_000 < total < 50_000_000
+
+
+class TestWBCEFocalLoss:
+    def test_returns_scalar(self):
+        loss_fn = WBCEFocalLoss()
+        pred = torch.sigmoid(torch.randn(2, 3, 288, 512))
+        target = torch.zeros(2, 3, 288, 512)
+        loss = loss_fn(pred, target)
+        assert loss.shape == ()
+        assert loss.item() >= 0
+
+    def test_perfect_prediction_low_loss(self):
+        loss_fn = WBCEFocalLoss()
+        target = torch.zeros(1, 3, 32, 32)
+        target[:, :, 15:17, 15:17] = 1.0
+        pred = target.clone().clamp(1e-6, 1 - 1e-6)
+        loss = loss_fn(pred, target)
+        assert loss.item() < 0.01
+
+    def test_bad_prediction_high_loss(self):
+        loss_fn = WBCEFocalLoss()
+        target = torch.zeros(1, 3, 32, 32)
+        target[:, :, 15:17, 15:17] = 1.0
+        pred = (1.0 - target).clamp(1e-6, 1 - 1e-6)
+        loss = loss_fn(pred, target)
+        assert loss.item() > 1.0
+
+    def test_all_zero_target(self):
+        loss_fn = WBCEFocalLoss()
+        pred = torch.full((1, 3, 32, 32), 0.1)
+        target = torch.zeros(1, 3, 32, 32)
+        loss = loss_fn(pred, target)
+        assert not torch.isnan(loss)
+        assert not torch.isinf(loss)
+
+    def test_continuous_targets_mixup(self):
+        loss_fn = WBCEFocalLoss()
+        pred = torch.sigmoid(torch.randn(1, 3, 32, 32))
+        target = torch.rand(1, 3, 32, 32)
+        loss = loss_fn(pred, target)
+        assert not torch.isnan(loss)
+        assert not torch.isinf(loss)
+
+    def test_gradient_flows(self):
+        loss_fn = WBCEFocalLoss()
+        raw = torch.randn(1, 3, 32, 32, requires_grad=True)
+        pred = torch.sigmoid(raw)
+        target = torch.zeros(1, 3, 32, 32)
+        target[:, :, 15:17, 15:17] = 1.0
+        loss = loss_fn(pred, target)
+        loss.backward()
+        assert raw.grad is not None
+        assert raw.grad.abs().sum() > 0
