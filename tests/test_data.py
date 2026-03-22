@@ -244,6 +244,21 @@ class TestPackageImports:
         assert generate_heatmap is not None
 
 
+from torch.utils.data import DataLoader
+
+
+class TestDataLoader:
+    def test_batch_shapes(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        loader = DataLoader(ds, batch_size=2, pin_memory=False, num_workers=0)
+        batch_frames, batch_heatmaps = next(iter(loader))
+        assert batch_frames.shape == (2, 9, 288, 512)
+        assert batch_heatmaps.shape == (2, 3, 288, 512)
+        assert batch_frames.dtype == torch.float32
+        assert batch_heatmaps.dtype == torch.float32
+
+
 class TestDatasetWithTransform:
     def test_transform_is_called(self, sample_frames_dir):
         frames_dir, csv_path = sample_frames_dir
