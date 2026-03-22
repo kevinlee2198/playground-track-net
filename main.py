@@ -3,7 +3,6 @@ import csv
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from inference.video_preprocess import create_sliding_windows, extract_frames
