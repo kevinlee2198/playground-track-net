@@ -191,3 +191,50 @@ class TestTrajectoryRectification:
         result = trajectory_rectification(detections, window=8)
         assert result[3] is not None
         assert result[4] is not None
+
+
+from inference.tracker import KalmanBallTracker
+
+
+class TestKalmanBallTracker:
+    def test_smooth_linear_trajectory(self):
+        """Kalman filter smooths a noisy linear trajectory."""
+        tracker = KalmanBallTracker()
+        # True trajectory: x goes 100->200, y stays 150
+        noisy_measurements = []
+        rng = np.random.default_rng(42)
+        for i in range(20):
+            true_x = 100 + i * 5
+            true_y = 150.0
+            noisy_x = true_x + rng.normal(0, 3)
+            noisy_y = true_y + rng.normal(0, 3)
+            noisy_measurements.append((noisy_x, noisy_y))
+
+        smoothed = []
+        for mx, my in noisy_measurements:
+            sx, sy = tracker.update(mx, my)
+            smoothed.append((sx, sy))
+
+        # Smoothed trajectory should be closer to the true line than raw measurements
+        true_y_val = 150.0
+        raw_y_errors = [abs(m[1] - true_y_val) for m in noisy_measurements]
+        smooth_y_errors = [abs(s[1] - true_y_val) for s in smoothed[5:]]  # skip warmup
+        assert np.mean(smooth_y_errors) < np.mean(raw_y_errors)
+
+    def test_predict_without_update(self):
+        """Tracker can predict next position without a measurement."""
+        tracker = KalmanBallTracker()
+        tracker.update(100.0, 150.0)
+        tracker.update(110.0, 150.0)
+        x, y = tracker.predict()
+        # Should predict forward based on velocity
+        assert x > 110.0
+
+    def test_reset(self):
+        """Reset clears tracker state."""
+        tracker = KalmanBallTracker()
+        tracker.update(100.0, 150.0)
+        tracker.reset()
+        # After reset, predict should return initial position (zeroed)
+        x, y = tracker.predict()
+        assert x == 0.0 and y == 0.0
