@@ -16,18 +16,24 @@ class KalmanBallTracker:
 
         # State transition: constant velocity model
         # x' = x + vx*dt, y' = y + vy*dt (dt=1 frame)
-        self.F = np.array([
-            [1, 0, 1, 0],
-            [0, 1, 0, 1],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1],
-        ], dtype=np.float64)
+        self.F = np.array(
+            [
+                [1, 0, 1, 0],
+                [0, 1, 0, 1],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ],
+            dtype=np.float64,
+        )
 
         # Measurement function: observe x, y only
-        self.H = np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-        ], dtype=np.float64)
+        self.H = np.array(
+            [
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+            ],
+            dtype=np.float64,
+        )
 
         # Process noise -- higher than typical for fast ball dynamics
         self.Q = np.eye(4, dtype=np.float64) * process_noise
@@ -53,8 +59,8 @@ class KalmanBallTracker:
         K = self.P @ self.H.T @ np.linalg.inv(S)
         y = z.reshape(2, 1) - self.H @ self.x
         self.x = self.x + K @ y
-        I = np.eye(4, dtype=np.float64)
-        self.P = (I - K @ self.H) @ self.P
+        identity = np.eye(4, dtype=np.float64)
+        self.P = (identity - K @ self.H) @ self.P
 
     def update(self, x: float, y: float) -> tuple[float, float]:
         """Update tracker with a new measurement and return smoothed position."""
