@@ -213,3 +213,29 @@ class TestTrackNet:
     def test_backbone_accessible(self):
         model = TrackNet()
         assert isinstance(model.backbone, UNetBackbone)
+
+
+class TestIntegration:
+    def test_forward_backward(self):
+        """Full forward pass + loss + backward pass."""
+        model = TrackNet()
+        loss_fn = WBCEFocalLoss()
+
+        x = torch.randn(2, 9, 288, 512)
+        target = torch.zeros(2, 3, 288, 512)
+        target[:, :, 140:150, 250:260] = 1.0
+
+        pred = model(x)
+        loss = loss_fn(pred, target)
+        loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"No gradient for {name}"
+
+    def test_batch_size_one(self):
+        """GroupNorm should work fine with batch size 1."""
+        model = TrackNet()
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
