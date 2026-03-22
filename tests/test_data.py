@@ -230,6 +230,20 @@ class TestCompose:
         assert torch.allclose(h_out, heatmaps)
 
 
+class TestPackageImports:
+    def test_imports(self):
+        from data import (
+            TrackNetDataset,
+            generate_heatmap,
+            Compose,
+            FrameColorJitter,
+            HorizontalFlip,
+            Mixup,
+        )
+        assert TrackNetDataset is not None
+        assert generate_heatmap is not None
+
+
 class TestDatasetWithTransform:
     def test_transform_is_called(self, sample_frames_dir):
         frames_dir, csv_path = sample_frames_dir
