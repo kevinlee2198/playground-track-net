@@ -1,6 +1,8 @@
 import torch
+import numpy as np
 import pytest
 from data.heatmap import generate_heatmap
+from data.dataset import TrackNetDataset
 
 
 class TestGenerateHeatmap:
@@ -37,3 +39,46 @@ class TestGenerateHeatmap:
         heatmap = generate_heatmap(x=200, y=100, visibility=1, height=288, width=512, radius=30)
         unique_vals = torch.unique(heatmap)
         assert all(v in (0.0, 1.0) for v in unique_vals)
+
+
+class TestTrackNetDataset:
+    def test_length_with_nine_frames(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        assert len(ds) == 3
+
+    def test_getitem_shapes(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        frames, heatmaps = ds[0]
+        assert frames.shape == (9, 288, 512)
+        assert heatmaps.shape == (3, 288, 512)
+
+    def test_getitem_dtypes(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        frames, heatmaps = ds[0]
+        assert frames.dtype == torch.float32
+        assert heatmaps.dtype == torch.float32
+
+    def test_frame_values_normalized(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        frames, _ = ds[0]
+        assert frames.min() >= 0.0
+        assert frames.max() <= 1.0
+
+    def test_invisible_frame_heatmap_is_zeros(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        _, heatmaps = ds[1]
+        assert heatmaps[0].sum() == 0.0
+        assert heatmaps[1].sum() > 0.0
+
+    def test_all_samples_accessible(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        for i in range(len(ds)):
+            frames, heatmaps = ds[i]
+            assert frames.shape == (9, 288, 512)
+            assert heatmaps.shape == (3, 288, 512)
