@@ -86,3 +86,53 @@ def test_aggregate_metrics_zero_division():
     assert metrics["precision"] == 0.0
     assert metrics["recall"] == 0.0
     assert metrics["f1"] == 0.0
+
+
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from training.evaluate import evaluate_epoch
+
+def _make_synthetic_heatmap(x, y, h=288, w=512, radius=5):
+    heatmap = torch.zeros(h, w)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dx * dx + dy * dy <= radius * radius:
+                py, px = y + dy, x + dx
+                if 0 <= py < h and 0 <= px < w:
+                    heatmap[py, px] = 1.0
+    return heatmap
+
+class PerfectModel(nn.Module):
+    def __init__(self, outputs):
+        super().__init__()
+        self._outputs = outputs
+        self._call_idx = 0
+        self.dummy = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        out = self._outputs[self._call_idx]
+        self._call_idx += 1
+        return out
+
+def test_evaluate_epoch_all_tp():
+    gt1 = torch.stack([
+        _make_synthetic_heatmap(100, 150),
+        _make_synthetic_heatmap(200, 100),
+        _make_synthetic_heatmap(300, 200),
+    ])
+    gt2 = torch.stack([
+        _make_synthetic_heatmap(50, 50),
+        _make_synthetic_heatmap(400, 250),
+        _make_synthetic_heatmap(250, 144),
+    ])
+    frames = torch.randn(2, 9, 288, 512)
+    gt_heatmaps = torch.stack([gt1, gt2])
+    dataset = TensorDataset(frames, gt_heatmaps)
+    dataloader = DataLoader(dataset, batch_size=2)
+    model = PerfectModel(outputs=[gt_heatmaps])
+    device = torch.device("cpu")
+    metrics = evaluate_epoch(model, dataloader, device)
+    assert metrics["tp"] == 6
+    assert metrics["fp"] == 0
+    assert metrics["fn"] == 0
+    assert metrics["f1"] == 1.0
