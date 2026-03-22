@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from data.heatmap import generate_heatmap
 from data.dataset import TrackNetDataset
-from data.transforms import HorizontalFlip
+from data.transforms import HorizontalFlip, FrameColorJitter
 
 
 class TestGenerateHeatmap:
@@ -152,3 +152,28 @@ class TestHorizontalFlip:
         f_frames, f_heatmaps = flip(frames, heatmaps)
         assert f_frames.shape == frames.shape
         assert f_heatmaps.shape == heatmaps.shape
+
+
+class TestFrameColorJitter:
+    def test_heatmaps_unchanged(self):
+        frames = torch.rand(9, 288, 512)
+        heatmaps = torch.rand(3, 288, 512)
+        jitter = FrameColorJitter(brightness=0.3, contrast=0.3, saturation=0.3)
+        _, out_heatmaps = jitter(frames, heatmaps)
+        assert torch.equal(out_heatmaps, heatmaps)
+
+    def test_frames_modified(self):
+        torch.manual_seed(0)
+        frames = torch.full((9, 288, 512), 0.5)
+        heatmaps = torch.zeros(3, 288, 512)
+        jitter = FrameColorJitter(brightness=0.5, contrast=0.5, saturation=0.5)
+        out_frames, _ = jitter(frames, heatmaps)
+        assert out_frames.shape == frames.shape
+
+    def test_output_clamped_to_01(self):
+        frames = torch.rand(9, 288, 512)
+        heatmaps = torch.zeros(3, 288, 512)
+        jitter = FrameColorJitter(brightness=0.5, contrast=0.5, saturation=0.5)
+        out_frames, _ = jitter(frames, heatmaps)
+        assert out_frames.min() >= 0.0
+        assert out_frames.max() <= 1.0

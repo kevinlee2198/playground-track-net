@@ -13,3 +13,19 @@ class HorizontalFlip:
             frames = frames.flip(-1)
             heatmaps = heatmaps.flip(-1)
         return frames, heatmaps
+
+
+class FrameColorJitter:
+    """Apply torchvision ColorJitter to each frame independently. Heatmaps untouched."""
+    def __init__(self, brightness: float = 0.3, contrast: float = 0.3, saturation: float = 0.3):
+        self.jitter = T.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation)
+
+    def __call__(self, frames: torch.Tensor, heatmaps: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        frame_list = frames.chunk(3, dim=0)
+        jittered = []
+        for frame in frame_list:
+            frame = self.jitter(frame)
+            frame = frame.clamp(0.0, 1.0)
+            jittered.append(frame)
+        frames = torch.cat(jittered, dim=0)
+        return frames, heatmaps
