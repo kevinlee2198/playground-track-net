@@ -18,13 +18,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Train subcommand (placeholder)
-    train_parser = subparsers.add_parser("train", help="Train the model")
-    train_parser.add_argument("--config", type=str, default="configs/default.yaml")
+    _train_parser = subparsers.add_parser("train", help="Train the model")
+    _train_parser.add_argument("--config", type=str, default="configs/default.yaml")
 
     # Evaluate subcommand (placeholder)
-    evaluate_parser = subparsers.add_parser("evaluate", help="Evaluate the model")
-    evaluate_parser.add_argument("--config", type=str, default="configs/default.yaml")
-    evaluate_parser.add_argument("--weights", type=str, required=True)
+    _eval_parser = subparsers.add_parser("evaluate", help="Evaluate the model")
+    _eval_parser.add_argument("--config", type=str, default="configs/default.yaml")
+    _eval_parser.add_argument("--weights", type=str, required=True)
 
     # Infer subcommand
     infer_parser = subparsers.add_parser("infer", help="Run inference on a video")
@@ -104,10 +104,7 @@ def run_inference(args: argparse.Namespace) -> None:
                     orig_height=orig_h,
                     threshold=args.threshold,
                 )
-                if result is not None:
-                    all_detections.append(result)
-                else:
-                    all_detections.append(None)
+                all_detections.append(result)
 
     # Trim to actual frame count (sliding windows may overshoot)
     all_detections = all_detections[: len(frames)]
