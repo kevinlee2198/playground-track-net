@@ -281,3 +281,32 @@ class TestKalmanBallTracker:
         # After reset, predict should return initial position (zeroed)
         x, y = tracker.predict()
         assert x == 0.0 and y == 0.0
+
+
+import subprocess
+import sys
+
+
+class TestCLI:
+    def test_help_shows_subcommands(self):
+        """CLI --help should list train, evaluate, infer subcommands."""
+        result = subprocess.run(
+            [sys.executable, "main.py", "--help"],
+            capture_output=True,
+            text=True,
+            cwd="/home/kevinlee/workspace/playground/playground-track-net",
+        )
+        assert result.returncode == 0
+        assert "train" in result.stdout
+        assert "infer" in result.stdout
+
+    def test_infer_requires_video(self):
+        """Infer subcommand requires --video argument."""
+        result = subprocess.run(
+            [sys.executable, "main.py", "infer"],
+            capture_output=True,
+            text=True,
+            cwd="/home/kevinlee/workspace/playground/playground-track-net",
+        )
+        assert result.returncode != 0
+        assert "video" in result.stderr.lower() or "required" in result.stderr.lower()
