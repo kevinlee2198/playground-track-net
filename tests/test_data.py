@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from data.heatmap import generate_heatmap
 from data.dataset import TrackNetDataset
-from data.transforms import HorizontalFlip, FrameColorJitter, Mixup
+from data.transforms import HorizontalFlip, FrameColorJitter, Mixup, Compose
 
 
 class TestGenerateHeatmap:
@@ -217,3 +217,26 @@ class TestMixup:
             lambdas.append(f_out[0, 0, 0].item())
         mean_lam = sum(lambdas) / len(lambdas)
         assert 0.3 < mean_lam < 0.7
+
+
+class TestCompose:
+    def test_compose_applies_in_order(self):
+        flip = HorizontalFlip(p=1.0)
+        compose = Compose([flip, flip])
+        frames = torch.randn(9, 4, 6)
+        heatmaps = torch.randn(3, 4, 6)
+        f_out, h_out = compose(frames, heatmaps)
+        assert torch.allclose(f_out, frames)
+        assert torch.allclose(h_out, heatmaps)
+
+
+class TestDatasetWithTransform:
+    def test_transform_is_called(self, sample_frames_dir):
+        frames_dir, csv_path = sample_frames_dir
+        flip = HorizontalFlip(p=1.0)
+        ds_no_flip = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        ds_flip = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path, transform=flip)
+        frames_orig, heatmaps_orig = ds_no_flip[0]
+        frames_flip, heatmaps_flip = ds_flip[0]
+        assert torch.equal(frames_flip, frames_orig.flip(-1))
+        assert torch.equal(heatmaps_flip, heatmaps_orig.flip(-1))

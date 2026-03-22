@@ -43,3 +43,14 @@ class Mixup:
         frames = lam * frames_a + (1 - lam) * frames_b
         heatmaps = lam * heatmaps_a + (1 - lam) * heatmaps_b
         return frames, heatmaps
+
+
+class Compose:
+    """Compose multiple (frames, heatmaps) transforms sequentially."""
+    def __init__(self, transforms: list):
+        self.transforms = transforms
+
+    def __call__(self, frames: torch.Tensor, heatmaps: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        for t in self.transforms:
+            frames, heatmaps = t(frames, heatmaps)
+        return frames, heatmaps
