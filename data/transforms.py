@@ -29,3 +29,17 @@ class FrameColorJitter:
             jittered.append(frame)
         frames = torch.cat(jittered, dim=0)
         return frames, heatmaps
+
+
+class Mixup:
+    """Mixup augmentation: blend two samples with random lambda from Beta(alpha, alpha)."""
+    def __init__(self, alpha: float = 1.0):
+        self.alpha = alpha
+
+    def __call__(self, frames_a: torch.Tensor, heatmaps_a: torch.Tensor,
+                 frames_b: torch.Tensor, heatmaps_b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        dist = torch.distributions.Beta(self.alpha, self.alpha)
+        lam = dist.sample().item()
+        frames = lam * frames_a + (1 - lam) * frames_b
+        heatmaps = lam * heatmaps_a + (1 - lam) * heatmaps_b
+        return frames, heatmaps

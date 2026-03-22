@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from data.heatmap import generate_heatmap
 from data.dataset import TrackNetDataset
-from data.transforms import HorizontalFlip, FrameColorJitter
+from data.transforms import HorizontalFlip, FrameColorJitter, Mixup
 
 
 class TestGenerateHeatmap:
@@ -177,3 +177,43 @@ class TestFrameColorJitter:
         out_frames, _ = jitter(frames, heatmaps)
         assert out_frames.min() >= 0.0
         assert out_frames.max() <= 1.0
+
+
+class TestMixup:
+    def test_mixup_blends_frames_and_heatmaps(self):
+        torch.manual_seed(42)
+        frames_a = torch.ones(9, 4, 6)
+        heatmaps_a = torch.ones(3, 4, 6)
+        frames_b = torch.zeros(9, 4, 6)
+        heatmaps_b = torch.zeros(3, 4, 6)
+        mixup = Mixup(alpha=1.0)
+        f_out, h_out = mixup(frames_a, heatmaps_a, frames_b, heatmaps_b)
+        assert f_out.min() >= 0.0
+        assert f_out.max() <= 1.0
+        lam = f_out[0, 0, 0].item()
+        assert torch.allclose(f_out, torch.full_like(f_out, lam))
+        assert torch.allclose(h_out, torch.full_like(h_out, lam))
+
+    def test_mixup_output_shapes(self):
+        frames_a = torch.randn(9, 288, 512)
+        heatmaps_a = torch.randn(3, 288, 512)
+        frames_b = torch.randn(9, 288, 512)
+        heatmaps_b = torch.randn(3, 288, 512)
+        mixup = Mixup(alpha=1.0)
+        f_out, h_out = mixup(frames_a, heatmaps_a, frames_b, heatmaps_b)
+        assert f_out.shape == (9, 288, 512)
+        assert h_out.shape == (3, 288, 512)
+
+    def test_mixup_lambda_from_beta_distribution(self):
+        torch.manual_seed(0)
+        mixup = Mixup(alpha=1.0)
+        frames_a = torch.ones(9, 2, 2)
+        heatmaps_a = torch.ones(3, 2, 2)
+        frames_b = torch.zeros(9, 2, 2)
+        heatmaps_b = torch.zeros(3, 2, 2)
+        lambdas = []
+        for _ in range(100):
+            f_out, _ = mixup(frames_a, heatmaps_a, frames_b, heatmaps_b)
+            lambdas.append(f_out[0, 0, 0].item())
+        mean_lam = sum(lambdas) / len(lambdas)
+        assert 0.3 < mean_lam < 0.7
