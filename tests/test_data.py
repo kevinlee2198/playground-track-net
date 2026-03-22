@@ -82,3 +82,46 @@ class TestTrackNetDataset:
             frames, heatmaps = ds[i]
             assert frames.shape == (9, 288, 512)
             assert heatmaps.shape == (3, 288, 512)
+
+
+import csv
+import cv2
+
+
+class TestDatasetBoundaryPadding:
+    def test_single_frame_dataset(self, tmp_path):
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        img = np.random.randint(0, 256, (288, 512, 3), dtype=np.uint8)
+        cv2.imwrite(str(frames_dir / "00000.jpg"), img)
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            writer.writerow([0, 1, 256, 144])
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        assert len(ds) == 1
+        frames, heatmaps = ds[0]
+        assert frames.shape == (9, 288, 512)
+        assert torch.equal(frames[:3], frames[3:6])
+        assert torch.equal(frames[:3], frames[6:9])
+
+    def test_four_frames_produces_two_samples(self, tmp_path):
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        labels = []
+        for i in range(4):
+            img = np.random.randint(0, 256, (288, 512, 3), dtype=np.uint8)
+            cv2.imwrite(str(frames_dir / f"{i:05d}.jpg"), img)
+            labels.append((i, 1, 100 + i * 10, 80 + i * 5))
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            for row in labels:
+                writer.writerow(row)
+        ds = TrackNetDataset(frames_dir=frames_dir, label_path=csv_path)
+        assert len(ds) == 2
+        frames, heatmaps = ds[1]
+        assert frames.shape == (9, 288, 512)
+        assert torch.equal(frames[3:6], frames[6:9])
