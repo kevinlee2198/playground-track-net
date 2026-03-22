@@ -1,5 +1,14 @@
-import yaml
+import glob as glob_module
 import os
+import tempfile
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+import yaml
+
+from training.evaluate import heatmap_to_position, compute_detection_metrics, aggregate_metrics, evaluate_epoch
+
 
 def test_config_loads_from_yaml():
     config_path = os.path.join(os.path.dirname(__file__), "..", "configs", "default.yaml")
@@ -24,9 +33,6 @@ def test_config_loads_from_yaml():
     assert config["checkpoint_dir"] == "checkpoints"
     assert config["log_dir"] == "runs"
 
-
-import torch
-from training.evaluate import heatmap_to_position, compute_detection_metrics, aggregate_metrics
 
 def test_heatmap_to_position_with_ball():
     heatmap = torch.zeros(288, 512)
@@ -88,10 +94,6 @@ def test_aggregate_metrics_zero_division():
     assert metrics["f1"] == 0.0
 
 
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
-from training.evaluate import evaluate_epoch
-
 def _make_synthetic_heatmap(x, y, h=288, w=512, radius=5):
     heatmap = torch.zeros(h, w)
     for dy in range(-radius, radius + 1):
@@ -136,3 +138,123 @@ def test_evaluate_epoch_all_tp():
     assert metrics["fp"] == 0
     assert metrics["fn"] == 0
     assert metrics["f1"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Training Loop
+# ---------------------------------------------------------------------------
+from training.trainer import Trainer
+
+
+class SimpleModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(9, 3, 1)
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, x):
+        return self.sigmoid(self.conv(x))
+
+class SimpleLoss(nn.Module):
+    def forward(self, pred, target):
+        return nn.functional.binary_cross_entropy(pred, target)
+
+def _make_synthetic_dataset(num_samples=4, h=32, w=64):
+    frames = torch.randn(num_samples, 9, h, w)
+    heatmaps = torch.zeros(num_samples, 3, h, w)
+    for i in range(num_samples):
+        cx, cy = w // 2, h // 2
+        for f in range(3):
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    if dx * dx + dy * dy <= 4:
+                        heatmaps[i, f, cy + dy, cx + dx] = 1.0
+    return TensorDataset(frames, heatmaps)
+
+def test_trainer_runs_one_epoch():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "optimizer": "AdamW", "learning_rate": 1e-3,
+            "lr_schedule": {"name": "MultiStepLR", "milestones": [20, 25], "gamma": 0.1},
+            "batch_size": 2, "epochs": 1, "input_size": [64, 32], "seq_len": 3, "seed": 42,
+            "num_workers": 0, "pin_memory": False, "persistent_workers": False,
+            "amp_dtype": "float32", "compile_model": False,
+            "checkpoint_dir": os.path.join(tmpdir, "checkpoints"),
+            "experiment_name": "test_run",
+            "log_dir": os.path.join(tmpdir, "runs"),
+            "detection_threshold": 0.5, "distance_threshold": 4,
+        }
+        model = SimpleModel()
+        loss_fn = SimpleLoss()
+        train_dataset = _make_synthetic_dataset(num_samples=4, h=32, w=64)
+        val_dataset = _make_synthetic_dataset(num_samples=2, h=32, w=64)
+        trainer = Trainer(model=model, loss_fn=loss_fn, train_dataset=train_dataset, val_dataset=val_dataset, config=config)
+        trainer.train()
+        assert trainer.current_epoch == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Checkpoint Save/Load Round-Trip
+# ---------------------------------------------------------------------------
+def test_checkpoint_save_load_roundtrip():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "optimizer": "AdamW", "learning_rate": 1e-3,
+            "lr_schedule": {"name": "MultiStepLR", "milestones": [20, 25], "gamma": 0.1},
+            "batch_size": 2, "epochs": 2, "input_size": [64, 32], "seq_len": 3, "seed": 42,
+            "num_workers": 0, "pin_memory": False, "persistent_workers": False,
+            "amp_dtype": "float32", "compile_model": False,
+            "checkpoint_dir": os.path.join(tmpdir, "checkpoints"),
+            "experiment_name": "test_ckpt",
+            "log_dir": os.path.join(tmpdir, "runs"),
+            "detection_threshold": 0.5, "distance_threshold": 4,
+        }
+        model = SimpleModel()
+        loss_fn = SimpleLoss()
+        train_ds = _make_synthetic_dataset(num_samples=4, h=32, w=64)
+        val_ds = _make_synthetic_dataset(num_samples=2, h=32, w=64)
+        trainer = Trainer(model=model, loss_fn=loss_fn, train_dataset=train_ds, val_dataset=val_ds, config=config)
+        trainer.train()
+        original_epoch = trainer.current_epoch
+        original_best_f1 = trainer.best_f1
+        original_state = {k: v.clone() for k, v in trainer.model.state_dict().items()}
+
+        model2 = SimpleModel()
+        trainer2 = Trainer(model=model2, loss_fn=SimpleLoss(), train_dataset=train_ds, val_dataset=val_ds, config=config)
+        ckpt_path = os.path.join(tmpdir, "checkpoints", "test_ckpt", "latest.pt")
+        trainer2.load_checkpoint(ckpt_path)
+        assert trainer2.current_epoch == original_epoch
+        assert trainer2.best_f1 == original_best_f1
+        for key in original_state:
+            assert torch.equal(trainer2.model.state_dict()[key], original_state[key])
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Package Exports + TensorBoard Verification
+# ---------------------------------------------------------------------------
+def test_training_package_imports():
+    from training import (Trainer, heatmap_to_position, compute_detection_metrics, aggregate_metrics, evaluate_epoch)
+    assert Trainer is not None
+    assert heatmap_to_position is not None
+
+def test_tensorboard_logs_created():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "optimizer": "AdamW", "learning_rate": 1e-3,
+            "lr_schedule": {"name": "MultiStepLR", "milestones": [20, 25], "gamma": 0.1},
+            "batch_size": 2, "epochs": 1, "input_size": [64, 32], "seq_len": 3, "seed": 42,
+            "num_workers": 0, "pin_memory": False, "persistent_workers": False,
+            "amp_dtype": "float32", "compile_model": False,
+            "checkpoint_dir": os.path.join(tmpdir, "checkpoints"),
+            "experiment_name": "test_tb",
+            "log_dir": os.path.join(tmpdir, "runs"),
+            "detection_threshold": 0.5, "distance_threshold": 4,
+        }
+        model = SimpleModel()
+        loss_fn = SimpleLoss()
+        train_ds = _make_synthetic_dataset(num_samples=4, h=32, w=64)
+        val_ds = _make_synthetic_dataset(num_samples=2, h=32, w=64)
+        trainer = Trainer(model=model, loss_fn=loss_fn, train_dataset=train_ds, val_dataset=val_ds, config=config)
+        trainer.train()
+        log_dir = os.path.join(tmpdir, "runs", "test_tb")
+        event_files = glob_module.glob(os.path.join(log_dir, "events.out.tfevents.*"))
+        assert len(event_files) > 0
