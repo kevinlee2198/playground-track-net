@@ -193,6 +193,49 @@ class TestTrajectoryRectification:
         assert result[4] is not None
 
 
+from utils.visualization import draw_ball_on_frame
+
+
+class TestDrawBallOnFrame:
+    def test_draws_circle_on_frame(self):
+        """Ball circle is drawn; frame is modified."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = draw_ball_on_frame(frame, x=640, y=360, confidence=0.9)
+        # The drawn region should not be all zeros
+        assert result[360, 640].sum() > 0
+
+    def test_high_confidence_is_green(self):
+        """High confidence (>0.8) draws green circle."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = draw_ball_on_frame(frame, x=640, y=360, confidence=0.9)
+        # Green channel should be dominant at center (BGR format)
+        b, g, r = result[360, 640]
+        assert g > b and g > r
+
+    def test_medium_confidence_is_yellow(self):
+        """Medium confidence (0.5-0.8) draws yellow circle."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = draw_ball_on_frame(frame, x=640, y=360, confidence=0.65)
+        b, g, r = result[360, 640]
+        # Yellow in BGR = (0, 255, 255)
+        assert g > 0 and r > 0
+
+    def test_low_confidence_is_red(self):
+        """Low confidence (<0.5) draws red circle."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        result = draw_ball_on_frame(frame, x=640, y=360, confidence=0.3)
+        b, g, r = result[360, 640]
+        # Red in BGR = (0, 0, 255)
+        assert r > g and r > b
+
+    def test_does_not_modify_original(self):
+        """Original frame is not modified; a copy is returned."""
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        original_sum = frame.sum()
+        draw_ball_on_frame(frame, x=640, y=360, confidence=0.9)
+        assert frame.sum() == original_sum
+
+
 from inference.tracker import KalmanBallTracker
 
 
