@@ -275,6 +275,42 @@ class TestTrackNetCustomBackbone:
         assert isinstance(model.mdd, torch.nn.Module)
 
 
+class TestUNetBackboneSigmoidFlag:
+    def test_default_apply_sigmoid_true(self):
+        """Default UNetBackbone still applies sigmoid — V2 backward compat."""
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        assert model.apply_sigmoid is True
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_apply_sigmoid_false_returns_raw_logits(self):
+        """With apply_sigmoid=False, output can exceed [0, 1]."""
+        torch.manual_seed(42)
+        model = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        # Raw logits are unbounded — at least some values should be outside [0, 1]
+        assert out.min() < 0.0 or out.max() > 1.0
+
+    def test_shape_same_regardless_of_sigmoid(self):
+        """Output shape must be identical whether sigmoid is applied or not."""
+        model_sig = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=True)
+        model_raw = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        x = torch.randn(2, 9, 288, 512)
+        out_sig = model_sig(x)
+        out_raw = model_raw(x)
+        assert out_sig.shape == out_raw.shape == (2, 3, 288, 512)
+
+    def test_sigmoid_flag_stored_as_attribute(self):
+        """The flag should be accessible as a plain attribute for guard checks."""
+        model_true = UNetBackbone(apply_sigmoid=True)
+        model_false = UNetBackbone(apply_sigmoid=False)
+        assert model_true.apply_sigmoid is True
+        assert model_false.apply_sigmoid is False
+
+
 class TestIntegration:
     def test_forward_backward(self):
         """Full forward pass + loss + backward pass."""
