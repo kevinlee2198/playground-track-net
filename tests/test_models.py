@@ -291,6 +291,18 @@ class TestTrackNetCustomBackbone:
         out = model(x)
         assert out.shape == (1, 3, 288, 512)
 
+    def test_mdd_plain_tensor_backward_compat(self):
+        """MDD returning a plain tensor (not tuple) still works."""
+
+        class SimpleMDD(torch.nn.Module):
+            def forward(self, x):
+                return x  # no attention, plain tensor
+
+        model = TrackNet(mdd=SimpleMDD())
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+
     def test_mdd_attention_passed_to_rstr(self):
         """When MDD returns (enriched, attention), attention is forwarded to R-STR."""
         captured = {}
