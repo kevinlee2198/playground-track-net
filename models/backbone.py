@@ -73,8 +73,14 @@ class UpBlock(nn.Module):
 class UNetBackbone(nn.Module):
     """V2 U-Net encoder-decoder with skip connections and sigmoid output head."""
 
-    def __init__(self, in_channels: int = 9, num_classes: int = 3) -> None:
+    def __init__(
+        self,
+        in_channels: int = 9,
+        num_classes: int = 3,
+        apply_sigmoid: bool = True,
+    ) -> None:
         super().__init__()
+        self.apply_sigmoid = apply_sigmoid
         self.down1 = DownBlock(in_channels, 64)
         self.down2 = DownBlock(64, 128)
         self.down3 = DownBlock(128, 256)
@@ -99,4 +105,5 @@ class UNetBackbone(nn.Module):
         u1 = self.up1(b, skip3)
         u2 = self.up2(u1, skip2)
         u3 = self.up3(u2, skip1)
-        return self.sigmoid(self.head(u3))
+        logits = self.head(u3)
+        return self.sigmoid(logits) if self.apply_sigmoid else logits

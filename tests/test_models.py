@@ -1,9 +1,22 @@
+import pytest
 import torch
 import torch.nn as nn
 
 from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
 from models.losses import WBCEFocalLoss
 from models.tracknet import TrackNet
+
+
+def _make_dummy_mdd() -> torch.nn.Module:
+    """Create a dummy MDD module that returns (enriched, attention) tuple."""
+
+    class DummyMDD(torch.nn.Module):
+        def forward(self, x):
+            enriched = x
+            attention = torch.ones(x.shape[0], 2, x.shape[2], x.shape[3])
+            return enriched, attention
+
+    return DummyMDD()
 
 
 class TestConvBlock:
@@ -264,15 +277,112 @@ class TestTrackNetCustomBackbone:
         assert out.shape == (1, 3, 288, 512)
 
     def test_custom_mdd_module(self):
-        """TrackNet should pass input through MDD when provided."""
-
-        class DummyMDD(torch.nn.Module):
-            def forward(self, x):
-                return x + 1.0
-
-        model = TrackNet(mdd=DummyMDD())
+        """TrackNet should pass input through MDD when provided.
+        MDD forward returns (enriched, attention) tuple — V5 interface.
+        """
+        model = TrackNet(mdd=_make_dummy_mdd())
         assert model.mdd is not None
         assert isinstance(model.mdd, torch.nn.Module)
+
+    def test_mdd_tuple_unpacked_in_forward(self):
+        """When MDD returns (enriched, attention), forward unpacks correctly."""
+        model = TrackNet(mdd=_make_dummy_mdd())
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+
+    def test_mdd_plain_tensor_backward_compat(self):
+        """MDD returning a plain tensor (not tuple) still works."""
+
+        class SimpleMDD(torch.nn.Module):
+            def forward(self, x):
+                return x  # no attention, plain tensor
+
+        model = TrackNet(mdd=SimpleMDD())
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+
+    def test_mdd_attention_passed_to_rstr(self):
+        """When MDD returns (enriched, attention), attention is forwarded to R-STR."""
+        captured = {}
+
+        class CapturingRSTR(torch.nn.Module):
+            def forward(self, logits, attention):
+                captured["attention"] = attention
+                return torch.sigmoid(logits)
+
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        model = TrackNet(backbone=backbone, mdd=_make_dummy_mdd(), rstr=CapturingRSTR())
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+        assert "attention" in captured
+        assert captured["attention"].shape == (1, 2, 288, 512)
+
+
+class TestUNetBackboneSigmoidFlag:
+    def test_default_apply_sigmoid_true(self):
+        """Default UNetBackbone still applies sigmoid — V2 backward compat."""
+        model = UNetBackbone(in_channels=9, num_classes=3)
+        assert model.apply_sigmoid is True
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_apply_sigmoid_false_returns_raw_logits(self):
+        """With apply_sigmoid=False, output can exceed [0, 1]."""
+        torch.manual_seed(42)
+        model = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        # Raw logits are unbounded — at least some values should be outside [0, 1]
+        assert out.min() < 0.0 or out.max() > 1.0
+
+    def test_shape_same_regardless_of_sigmoid(self):
+        """Output shape must be identical whether sigmoid is applied or not."""
+        model_sig = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=True)
+        model_raw = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        x = torch.randn(2, 9, 288, 512)
+        out_sig = model_sig(x)
+        out_raw = model_raw(x)
+        assert out_sig.shape == out_raw.shape == (2, 3, 288, 512)
+
+    def test_sigmoid_flag_stored_as_attribute(self):
+        """The flag should be accessible as a plain attribute for guard checks."""
+        model_true = UNetBackbone(apply_sigmoid=True)
+        model_false = UNetBackbone(apply_sigmoid=False)
+        assert model_true.apply_sigmoid is True
+        assert model_false.apply_sigmoid is False
+
+
+class TestTrackNetSigmoidGuard:
+    def test_rstr_with_sigmoid_raises(self):
+        """R-STR requires raw logits — sigmoid backbone must be rejected."""
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=True)
+        dummy_rstr = nn.Identity()
+        with pytest.raises(ValueError, match="apply_sigmoid"):
+            TrackNet(backbone=backbone, rstr=dummy_rstr)
+
+    def test_rstr_without_sigmoid_ok(self):
+        """R-STR with apply_sigmoid=False should construct fine."""
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        dummy_rstr = nn.Identity()
+        model = TrackNet(backbone=backbone, rstr=dummy_rstr)
+        assert model.rstr is not None
+
+    def test_no_rstr_with_sigmoid_ok(self):
+        """V2 mode (no R-STR) with default sigmoid is fine."""
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=True)
+        model = TrackNet(backbone=backbone)
+        assert model.rstr is None
+
+    def test_default_tracknet_no_raise(self):
+        """Default TrackNet() should never raise — V2 mode."""
+        model = TrackNet()
+        assert model.backbone.apply_sigmoid is True
+        assert model.rstr is None
 
 
 class TestIntegration:
