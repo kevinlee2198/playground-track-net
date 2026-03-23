@@ -26,10 +26,22 @@ class TrackNet(nn.Module):
         self.mdd = mdd
         self.rstr = rstr
 
+        if self.rstr is not None and getattr(self.backbone, "apply_sigmoid", True):
+            raise ValueError(
+                "R-STR requires raw logits from the backbone, but "
+                "backbone.apply_sigmoid is True. Construct the backbone "
+                "with apply_sigmoid=False when using R-STR."
+            )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        attention = None
         if self.mdd is not None:
-            x = self.mdd(x)
+            mdd_out = self.mdd(x)
+            if isinstance(mdd_out, tuple):
+                x, attention = mdd_out
+            else:
+                x = mdd_out
         out = self.backbone(x)
         if self.rstr is not None:
-            out = self.rstr(out)
+            out = self.rstr(out, attention)
         return out

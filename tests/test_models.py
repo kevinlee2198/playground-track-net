@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn as nn
 
@@ -309,6 +310,34 @@ class TestUNetBackboneSigmoidFlag:
         model_false = UNetBackbone(apply_sigmoid=False)
         assert model_true.apply_sigmoid is True
         assert model_false.apply_sigmoid is False
+
+
+class TestTrackNetSigmoidGuard:
+    def test_rstr_with_sigmoid_raises(self):
+        """R-STR requires raw logits — sigmoid backbone must be rejected."""
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=True)
+        dummy_rstr = nn.Identity()
+        with pytest.raises(ValueError, match="apply_sigmoid"):
+            TrackNet(backbone=backbone, rstr=dummy_rstr)
+
+    def test_rstr_without_sigmoid_ok(self):
+        """R-STR with apply_sigmoid=False should construct fine."""
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
+        dummy_rstr = nn.Identity()
+        model = TrackNet(backbone=backbone, rstr=dummy_rstr)
+        assert model.rstr is not None
+
+    def test_no_rstr_with_sigmoid_ok(self):
+        """V2 mode (no R-STR) with default sigmoid is fine."""
+        backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=True)
+        model = TrackNet(backbone=backbone)
+        assert model.rstr is None
+
+    def test_default_tracknet_no_raise(self):
+        """Default TrackNet() should never raise — V2 mode."""
+        model = TrackNet()
+        assert model.backbone.apply_sigmoid is True
+        assert model.rstr is None
 
 
 class TestIntegration:
