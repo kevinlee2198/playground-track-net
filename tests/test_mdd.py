@@ -1,7 +1,6 @@
 import math
 
 import torch
-import pytest
 
 from models.mdd import MotionDirectionDecoupling
 
@@ -227,7 +226,7 @@ class TestMDDNumerical:
         alpha_val = 0.5
         beta_val = 0.3
         tanh_alpha = math.tanh(alpha_val)  # 0.46211715...
-        tanh_beta = math.tanh(beta_val)    # 0.29131261...
+        tanh_beta = math.tanh(beta_val)  # 0.29131261...
 
         k = 5.0 / (0.45 * abs(tanh_alpha) + 1e-8)
         m = 0.6 * tanh_beta
@@ -239,22 +238,22 @@ class TestMDDNumerical:
             return 1.0 / (1.0 + math.exp(-val))
 
         # Attention values (sigmoid per-channel then mean across 3 identical RGB channels = same value)
-        a_prev_plus = sigmoid(k * (abs(0.5) - m))     # from P_plus_prev
-        a_prev_minus = sigmoid(k * (abs(0.0) - m))    # from P_minus_prev
-        a_next_plus = sigmoid(k * (abs(0.0) - m))     # from P_plus_next
-        a_next_minus = sigmoid(k * (abs(0.3) - m))    # from P_minus_next
+        a_prev_plus = sigmoid(k * (abs(0.5) - m))  # from P_plus_prev
+        a_prev_minus = sigmoid(k * (abs(0.0) - m))  # from P_minus_prev
+        a_next_plus = sigmoid(k * (abs(0.0) - m))  # from P_plus_next
+        a_next_minus = sigmoid(k * (abs(0.3) - m))  # from P_minus_next
 
         # Check attention output: [a_prev_plus, a_prev_minus, a_next_plus, a_next_minus]
-        expected_att = torch.tensor([
-            [[[a_prev_plus]], [[a_prev_minus]], [[a_next_plus]], [[a_next_minus]]]
-        ])
+        expected_att = torch.tensor(
+            [[[[a_prev_plus]], [[a_prev_minus]], [[a_next_plus]], [[a_next_minus]]]]
+        )
         assert torch.allclose(attention, expected_att, atol=1e-5), (
             f"Expected {expected_att.squeeze()}, got {attention.squeeze()}"
         )
 
         # Check enriched channel layout: [I_{t-1}(3), A_prev(2), I_t(3), A_next(2), I_{t+1}(3)]
-        assert torch.allclose(enriched[:, 0:3], i_prev, atol=1e-7)   # I_{t-1}
-        assert torch.allclose(enriched[:, 5:8], i_curr, atol=1e-7)   # I_t
+        assert torch.allclose(enriched[:, 0:3], i_prev, atol=1e-7)  # I_{t-1}
+        assert torch.allclose(enriched[:, 5:8], i_curr, atol=1e-7)  # I_t
         assert torch.allclose(enriched[:, 10:13], i_next, atol=1e-7)  # I_{t+1}
 
         # Attention channels within enriched match attention output
@@ -308,7 +307,7 @@ class TestMDDIntegration:
         x = torch.randn(1, 9, 288, 512)
         out = model(x)
         assert out.shape == (1, 3, 288, 512)
-        assert not hasattr(model, '_mdd_attention') or model._mdd_attention is None
+        assert not hasattr(model, "_mdd_attention") or model._mdd_attention is None
 
     def test_v5_full_backward_pass(self):
         """Gradients flow through MDD -> backbone end-to-end."""

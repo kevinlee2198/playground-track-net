@@ -47,28 +47,26 @@ class MotionDirectionDecoupling(nn.Module):
         att = torch.sigmoid(k * (torch.abs(x) - m))
         return att.mean(dim=1, keepdim=True)
 
-    def forward(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # Split 9-channel input into 3 RGB frames
-        i_prev = x[:, 0:3]   # I_{t-1}: (B, 3, H, W)
-        i_curr = x[:, 3:6]   # I_t:     (B, 3, H, W)
-        i_next = x[:, 6:9]   # I_{t+1}: (B, 3, H, W)
+        i_prev = x[:, 0:3]  # I_{t-1}: (B, 3, H, W)
+        i_curr = x[:, 3:6]  # I_t:     (B, 3, H, W)
+        i_next = x[:, 6:9]  # I_{t+1}: (B, 3, H, W)
 
         # Frame differences (signed)
         d_prev = i_curr - i_prev  # (B, 3, H, W)
         d_next = i_next - i_curr  # (B, 3, H, W)
 
         # Signed polarity decomposition
-        p_plus_prev = F.relu(d_prev)    # brightening (arrival)
+        p_plus_prev = F.relu(d_prev)  # brightening (arrival)
         p_minus_prev = F.relu(-d_prev)  # darkening (departure)
         p_plus_next = F.relu(d_next)
         p_minus_next = F.relu(-d_next)
 
         # Learnable attention: 2 channels per transition (plus + minus)
-        a_prev_plus = self._adaptive_attention(p_plus_prev)    # (B, 1, H, W)
+        a_prev_plus = self._adaptive_attention(p_plus_prev)  # (B, 1, H, W)
         a_prev_minus = self._adaptive_attention(p_minus_prev)  # (B, 1, H, W)
-        a_next_plus = self._adaptive_attention(p_plus_next)    # (B, 1, H, W)
+        a_next_plus = self._adaptive_attention(p_plus_next)  # (B, 1, H, W)
         a_next_minus = self._adaptive_attention(p_minus_next)  # (B, 1, H, W)
 
         a_prev = torch.cat([a_prev_plus, a_prev_minus], dim=1)  # (B, 2, H, W)
