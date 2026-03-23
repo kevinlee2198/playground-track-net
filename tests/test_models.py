@@ -7,6 +7,18 @@ from models.losses import WBCEFocalLoss
 from models.tracknet import TrackNet
 
 
+def _make_dummy_mdd() -> torch.nn.Module:
+    """Create a dummy MDD module that returns (enriched, attention) tuple."""
+
+    class DummyMDD(torch.nn.Module):
+        def forward(self, x):
+            enriched = x
+            attention = torch.ones(x.shape[0], 2, x.shape[2], x.shape[3])
+            return enriched, attention
+
+    return DummyMDD()
+
+
 class TestConvBlock:
     def test_output_shape(self):
         block = ConvBlock(in_channels=64, out_channels=128)
@@ -268,29 +280,13 @@ class TestTrackNetCustomBackbone:
         """TrackNet should pass input through MDD when provided.
         MDD forward returns (enriched, attention) tuple — V5 interface.
         """
-
-        class DummyMDD(torch.nn.Module):
-            def forward(self, x):
-                # MDD returns (enriched_input, attention_maps)
-                enriched = x + 1.0
-                attention = torch.ones(x.shape[0], 2, x.shape[2], x.shape[3])
-                return enriched, attention
-
-        model = TrackNet(mdd=DummyMDD())
+        model = TrackNet(mdd=_make_dummy_mdd())
         assert model.mdd is not None
         assert isinstance(model.mdd, torch.nn.Module)
 
     def test_mdd_tuple_unpacked_in_forward(self):
         """When MDD returns (enriched, attention), forward unpacks correctly."""
-
-        class DummyMDD(torch.nn.Module):
-            def forward(self, x):
-                enriched = x
-                attention = torch.ones(x.shape[0], 2, x.shape[2], x.shape[3])
-                return enriched, attention
-
-        # V2 backbone (sigmoid on) with MDD but no R-STR — should work fine
-        model = TrackNet(mdd=DummyMDD())
+        model = TrackNet(mdd=_make_dummy_mdd())
         x = torch.randn(1, 9, 288, 512)
         out = model(x)
         assert out.shape == (1, 3, 288, 512)
@@ -299,20 +295,13 @@ class TestTrackNetCustomBackbone:
         """When MDD returns (enriched, attention), attention is forwarded to R-STR."""
         captured = {}
 
-        class DummyMDD(torch.nn.Module):
-            def forward(self, x):
-                enriched = x
-                attention = torch.ones(x.shape[0], 2, x.shape[2], x.shape[3])
-                return enriched, attention
-
-        class DummyRSTR(torch.nn.Module):
+        class CapturingRSTR(torch.nn.Module):
             def forward(self, logits, attention):
                 captured["attention"] = attention
-                # Just apply sigmoid for test simplicity
                 return torch.sigmoid(logits)
 
         backbone = UNetBackbone(in_channels=9, num_classes=3, apply_sigmoid=False)
-        model = TrackNet(backbone=backbone, mdd=DummyMDD(), rstr=DummyRSTR())
+        model = TrackNet(backbone=backbone, mdd=_make_dummy_mdd(), rstr=CapturingRSTR())
         x = torch.randn(1, 9, 288, 512)
         out = model(x)
         assert out.shape == (1, 3, 288, 512)
