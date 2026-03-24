@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 
 from models.backbone import UNetBackbone
+from models.mdd import MotionDirectionDecoupling
+from models.rstr import RSTRHead
 
 
 class TrackNet(nn.Module):
@@ -45,3 +47,17 @@ class TrackNet(nn.Module):
         if self.rstr is not None:
             out = self.rstr(out, attention)
         return out
+
+
+def tracknet_v5() -> TrackNet:
+    """Create a complete TrackNet V5 model.
+
+    V5 = MDD preprocessing + UNetBackbone(13ch, no sigmoid) + RSTRHead.
+
+    Returns:
+        TrackNet instance configured for V5 operation.
+    """
+    mdd = MotionDirectionDecoupling()
+    backbone = UNetBackbone(in_channels=13, num_classes=3, apply_sigmoid=False)
+    rstr = RSTRHead()
+    return TrackNet(backbone=backbone, mdd=mdd, rstr=rstr)
