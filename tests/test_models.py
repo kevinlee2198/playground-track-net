@@ -513,10 +513,10 @@ class TestTSATTHead:
         out = head(x)
         assert out.shape == (1, 3, 288, 512)
 
-    def test_deterministic_in_mode(self):
-        """In inference mode, same input should produce same output."""
+    def test_deterministic_in_eval(self):
+        """In eval mode, same input should produce same output."""
         head = TSATTHead()
-        head.train(False)
+        head.eval()
         x = torch.randn(1, 3, 288, 512)
         out1 = head(x)
         out2 = head(x)
@@ -546,7 +546,7 @@ class TestRSTRHead:
     def test_output_in_sigmoid_range(self):
         """Output must be in [0, 1] (sigmoid applied)."""
         head = RSTRHead()
-        head.train(False)
+        head.eval()
         logits = torch.randn(1, 3, 288, 512)
         attention = torch.randn(1, 4, 288, 512)
         out = head(logits, attention)
@@ -571,7 +571,7 @@ class TestRSTRHead:
     def test_deterministic_in_inference(self):
         """In inference mode, dropout is off, so same input -> same output."""
         head = RSTRHead()
-        head.train(False)
+        head.eval()
         logits = torch.randn(1, 3, 288, 512)
         attention = torch.randn(1, 4, 288, 512)
         out1 = head(logits, attention)
@@ -615,7 +615,7 @@ class TestRSTRHead:
         # At init, TSATTHead output projection is zero-initialized,
         # so delta should be near-zero. In inference mode (no dropout),
         # output should be close to sigmoid(draft_mdd).
-        head.train(False)
+        head.eval()
         out = head(logits, attention)
         assert torch.allclose(out, expected, atol=0.05), (
             "At init, RSTRHead output should approximate sigmoid(draft_mdd)"
@@ -684,7 +684,7 @@ class TestTrackNetV5Factory:
     def test_forward_pass(self):
         """Full V5 forward pass: (B, 9, 288, 512) -> (B, 3, 288, 512)."""
         model = tracknet_v5()
-        model.train(False)
+        model.eval()
         x = torch.randn(1, 9, 288, 512)
         out = model(x)
         assert out.shape == (1, 3, 288, 512)
@@ -736,7 +736,7 @@ class TestV5Integration:
     def test_v5_output_range(self):
         """V5 output should be in [0, 1] (sigmoid at end of R-STR)."""
         model = tracknet_v5()
-        model.train(False)
+        model.eval()
         x = torch.randn(1, 9, 288, 512)
         out = model(x)
         assert out.min() >= 0.0

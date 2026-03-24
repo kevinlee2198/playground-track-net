@@ -123,10 +123,10 @@ class TSATTHead(nn.Module):
         self.num_frames = num_frames
         self.img_h = img_h
         self.img_w = img_w
-        self.grid_h = img_h // patch_size  # 18
-        self.grid_w = img_w // patch_size  # 32
-        self.num_patches = self.grid_h * self.grid_w  # 576
-        self.patch_dim = patch_size * patch_size  # 256
+        self.grid_h = img_h // patch_size
+        self.grid_w = img_w // patch_size
+        self.num_patches = self.grid_h * self.grid_w
+        self.patch_dim = patch_size * patch_size
 
         # Patch embedding: flatten patch pixels -> project to embed_dim
         self.patch_proj = nn.Linear(self.patch_dim, embed_dim)
@@ -199,51 +199,34 @@ class TSATTHead(nn.Module):
         """Predict residual delta from draft heatmap logits.
 
         Args:
-            x: (B, 3, H, W) draft heatmap logits.
+            x: (B, T, H, W) draft heatmap logits (T channels treated as frames).
 
         Returns:
-            delta: (B, 3, H, W) residual correction.
+            delta: (B, T, H, W) residual correction.
         """
         B = x.shape[0]
         T = self.num_frames
+        S = self.num_patches
 
-        # 1. Split channels into individual frames and patchify each
-        frames = x.unsqueeze(2)  # (B, 3, 1, H, W)
-        patches_list = []
-        for t in range(T):
-            frame_t = frames[:, t]  # (B, 1, H, W)
-            patches_list.append(self._patchify(frame_t))  # (B, S, patch_dim)
+        # 1. Patchify all frames at once: (B, T, H, W) -> (B*T, 1, H, W) -> (B, T, S, patch_dim)
+        all_patches = self._patchify(x.reshape(B * T, 1, self.img_h, self.img_w))
+        all_patches = all_patches.reshape(B, T, S, self.patch_dim)
 
-        # 2. Project to embedding dim
-        # Stack: (B, T, S, patch_dim)
-        all_patches = torch.stack(patches_list, dim=1)
+        # 2. Project to embedding dim and add factorized positional encodings
         tokens = self.patch_proj(all_patches)  # (B, T, S, D)
+        tokens = tokens + self.pos_spatial.unsqueeze(1)  # spatial: (1, 1, S, D)
+        tokens = tokens + self.pos_temporal.unsqueeze(2)  # temporal: (1, T, 1, D)
 
-        # 3. Add factorized positional encodings
-        # Spatial: broadcast across T -> (1, 1, S, D)
-        tokens = tokens + self.pos_spatial.unsqueeze(1)
-        # Temporal: broadcast across S -> (1, T, 1, D)
-        tokens = tokens + self.pos_temporal.unsqueeze(2)
-
-        # 4. Flatten to sequence: (B, T*S, D)
-        tokens = tokens.reshape(B, T * self.num_patches, -1)
-
-        # 5. Transformer layers
+        # 3. Flatten to sequence and apply Transformer layers
+        tokens = tokens.reshape(B, T * S, -1)
         for layer in self.layers:
             tokens = layer(tokens)
 
-        # 6. Output projection and unpatchify
+        # 4. Output projection and unpatchify all frames at once
         tokens = self.output_proj(tokens)  # (B, T*S, patch_dim)
-        tokens = tokens.reshape(B, T, self.num_patches, self.patch_dim)
-
-        # Unpatchify each frame
-        delta_frames = []
-        for t in range(T):
-            frame_tokens = tokens[:, t]  # (B, S, patch_dim)
-            delta_frames.append(self._unpatchify(frame_tokens))  # (B, 1, H, W)
-
-        delta = torch.cat(delta_frames, dim=1)  # (B, 3, H, W)
-        return delta
+        tokens = tokens.reshape(B * T, S, self.patch_dim)
+        delta = self._unpatchify(tokens)  # (B*T, 1, H, W)
+        return delta.reshape(B, T, self.img_h, self.img_w)
 
 
 class RSTRHead(nn.Module):
@@ -279,9 +262,6 @@ class RSTRHead(nn.Module):
         self.tsatt = TSATTHead(num_frames=logit_channels, **tsatt_kwargs)
         self.sigmoid = nn.Sigmoid()
 
-        self._init_fusion()
-
-    def _init_fusion(self) -> None:
         nn.init.kaiming_uniform_(self.fusion_conv.weight, nonlinearity="relu")
         if self.fusion_conv.bias is not None:
             nn.init.zeros_(self.fusion_conv.bias)
