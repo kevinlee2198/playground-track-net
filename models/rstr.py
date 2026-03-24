@@ -32,13 +32,17 @@ class FactorizedAttentionLayer(nn.Module):
         # Temporal attention
         self.norm_t = nn.LayerNorm(embed_dim)
         self.attn_t = nn.MultiheadAttention(
-            embed_dim, num_heads, batch_first=True,
+            embed_dim,
+            num_heads,
+            batch_first=True,
         )
 
         # Spatial attention
         self.norm_s = nn.LayerNorm(embed_dim)
         self.attn_s = nn.MultiheadAttention(
-            embed_dim, num_heads, batch_first=True,
+            embed_dim,
+            num_heads,
+            batch_first=True,
         )
 
         # Feed-forward
@@ -69,7 +73,7 @@ class FactorizedAttentionLayer(nn.Module):
         xs_attn, _ = self.attn_s(xs_norm, xs_norm, xs_norm)
         xs = xs + xs_attn  # residual
         # Reshape back: (B*T, S, D) -> (B, T*S, D)
-        x = xs.reshape(B, T, S, D).reshape(B, N, D)
+        x = xs.reshape(B, N, D)
 
         # --- Feed-forward with residual ---
         x = x + self.ff(self.norm_ff(x))
@@ -131,21 +135,21 @@ class TSATTHead(nn.Module):
         self.pos_spatial = nn.Parameter(
             torch.randn(1, self.num_patches, embed_dim) * 0.02
         )
-        self.pos_temporal = nn.Parameter(
-            torch.randn(1, num_frames, embed_dim) * 0.02
-        )
+        self.pos_temporal = nn.Parameter(torch.randn(1, num_frames, embed_dim) * 0.02)
 
         # Transformer layers
-        self.layers = nn.ModuleList([
-            FactorizedAttentionLayer(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                ff_dim=ff_dim,
-                num_frames=num_frames,
-                num_patches=self.num_patches,
-            )
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                FactorizedAttentionLayer(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    ff_dim=ff_dim,
+                    num_frames=num_frames,
+                    num_patches=self.num_patches,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
         # Output projection: embed_dim -> patch_dim (for unpatchify)
         self.output_proj = nn.Linear(embed_dim, self.patch_dim)
@@ -188,9 +192,7 @@ class TSATTHead(nn.Module):
         # (B, num_patches, patch_dim) -> (B, grid_h, grid_w, p, p)
         tokens = tokens.reshape(B, self.grid_h, self.grid_w, p, p)
         # -> (B, grid_h, p, grid_w, p) -> (B, 1, H, W)
-        frame = tokens.permute(0, 1, 3, 2, 4).reshape(
-            B, 1, self.img_h, self.img_w
-        )
+        frame = tokens.permute(0, 1, 3, 2, 4).reshape(B, 1, self.img_h, self.img_w)
         return frame
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

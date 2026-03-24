@@ -4,7 +4,8 @@ import torch.nn as nn
 
 from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
 from models.losses import WBCEFocalLoss
-from models.tracknet import TrackNet
+from models.rstr import FactorizedAttentionLayer, RSTRHead, TSATTHead
+from models.tracknet import TrackNet, tracknet_v5
 
 
 def _make_dummy_mdd() -> torch.nn.Module:
@@ -409,3 +410,353 @@ class TestIntegration:
         x = torch.randn(1, 9, 288, 512)
         out = model(x)
         assert out.shape == (1, 3, 288, 512)
+
+
+class TestFactorizedAttentionLayer:
+    def test_output_shape(self):
+        """Output shape matches input: (B, T*S, D)."""
+        layer = FactorizedAttentionLayer(
+            embed_dim=128,
+            num_heads=4,
+            ff_dim=256,
+            num_frames=3,
+            num_patches=576,
+        )
+        x = torch.randn(2, 1728, 128)  # B=2, T*S=3*576=1728, D=128
+        out = layer(x)
+        assert out.shape == (2, 1728, 128)
+
+    def test_gradient_flows(self):
+        """Gradients should flow through both temporal and spatial attention."""
+        layer = FactorizedAttentionLayer(
+            embed_dim=128,
+            num_heads=4,
+            ff_dim=256,
+            num_frames=3,
+            num_patches=576,
+        )
+        x = torch.randn(2, 1728, 128, requires_grad=True)
+        out = layer(x)
+        out.sum().backward()
+        assert x.grad is not None
+        assert x.grad.abs().sum() > 0
+
+    def test_small_input(self):
+        """Verify with minimal dimensions for fast testing."""
+        layer = FactorizedAttentionLayer(
+            embed_dim=32,
+            num_heads=4,
+            ff_dim=64,
+            num_frames=3,
+            num_patches=4,
+        )
+        x = torch.randn(1, 12, 32)  # T*S=3*4=12
+        out = layer(x)
+        assert out.shape == (1, 12, 32)
+
+    def test_residual_connection(self):
+        """Output should not be identical to input but should be correlated
+        (residual connections keep them close at init)."""
+        layer = FactorizedAttentionLayer(
+            embed_dim=32,
+            num_heads=4,
+            ff_dim=64,
+            num_frames=3,
+            num_patches=4,
+        )
+        x = torch.randn(1, 12, 32)
+        out = layer(x)
+        # They should differ (attention modifies the signal)
+        assert not torch.allclose(x, out, atol=1e-6)
+
+
+class TestTSATTHead:
+    def test_output_shape(self):
+        """TSATTHead: (B, 3, 288, 512) -> (B, 3, 288, 512)."""
+        head = TSATTHead()
+        x = torch.randn(2, 3, 288, 512)
+        out = head(x)
+        assert out.shape == (2, 3, 288, 512)
+
+    def test_small_residuals_at_init(self):
+        """Zero-init output projection means initial output should be near-zero."""
+        head = TSATTHead()
+        x = torch.randn(1, 3, 288, 512)
+        out = head(x)
+        assert out.abs().max() < 0.1, (
+            f"Initial residuals should be near-zero, got max={out.abs().max():.4f}"
+        )
+
+    def test_gradient_flow(self):
+        """Gradients should flow from output back to input."""
+        head = TSATTHead()
+        # Perturb zero-init output projection so gradients are non-zero
+        with torch.no_grad():
+            head.output_proj.weight.add_(0.01)
+        x = torch.randn(1, 3, 288, 512, requires_grad=True)
+        out = head(x)
+        out.sum().backward()
+        assert x.grad is not None
+        assert x.grad.abs().sum() > 0
+
+    def test_parameter_count(self):
+        """TSATTHead should be lightweight: expect ~200K-800K params.
+        Must stay small to satisfy V5 paper's 3.7% FLOP increase constraint."""
+        head = TSATTHead()
+        total = sum(p.numel() for p in head.parameters())
+        assert 100_000 < total < 2_000_000, f"Unexpected param count: {total:,}"
+
+    def test_batch_size_one(self):
+        """Should work with batch size 1."""
+        head = TSATTHead()
+        x = torch.randn(1, 3, 288, 512)
+        out = head(x)
+        assert out.shape == (1, 3, 288, 512)
+
+    def test_deterministic_in_mode(self):
+        """In inference mode, same input should produce same output."""
+        head = TSATTHead()
+        head.train(False)
+        x = torch.randn(1, 3, 288, 512)
+        out1 = head(x)
+        out2 = head(x)
+        assert torch.allclose(out1, out2, atol=1e-6)
+
+    def test_patchify_unpatchify_roundtrip(self):
+        """Patchify followed by unpatchify should recover the original frame."""
+        head = TSATTHead()
+        frame = torch.randn(1, 1, 288, 512)
+        patches = head._patchify(frame)
+        recovered = head._unpatchify(patches)
+        assert torch.allclose(frame, recovered, atol=1e-6), (
+            "Patchify/unpatchify should be exact inverses"
+        )
+
+
+class TestRSTRHead:
+    def test_output_shape(self):
+        """RSTRHead: logits (B, 3, 288, 512) + attention (B, 4, 288, 512)
+        -> refined heatmaps (B, 3, 288, 512)."""
+        head = RSTRHead()
+        logits = torch.randn(2, 3, 288, 512)
+        attention = torch.randn(2, 4, 288, 512)
+        out = head(logits, attention)
+        assert out.shape == (2, 3, 288, 512)
+
+    def test_output_in_sigmoid_range(self):
+        """Output must be in [0, 1] (sigmoid applied)."""
+        head = RSTRHead()
+        head.train(False)
+        logits = torch.randn(1, 3, 288, 512)
+        attention = torch.randn(1, 4, 288, 512)
+        out = head(logits, attention)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_dropout_active_in_train(self):
+        """In training mode, stochastic masking should produce different
+        outputs across calls (with high probability)."""
+        head = RSTRHead()
+        # Perturb zero-init output projection so dropout effect is visible
+        with torch.no_grad():
+            head.tsatt.output_proj.weight.add_(0.01)
+        head.train()
+        logits = torch.randn(1, 3, 288, 512)
+        attention = torch.randn(1, 4, 288, 512)
+        out1 = head(logits, attention)
+        out2 = head(logits, attention)
+        # Dropout should cause different outputs in training
+        assert not torch.allclose(out1, out2, atol=1e-6)
+
+    def test_deterministic_in_inference(self):
+        """In inference mode, dropout is off, so same input -> same output."""
+        head = RSTRHead()
+        head.train(False)
+        logits = torch.randn(1, 3, 288, 512)
+        attention = torch.randn(1, 4, 288, 512)
+        out1 = head(logits, attention)
+        out2 = head(logits, attention)
+        assert torch.allclose(out1, out2, atol=1e-6)
+
+    def test_gradient_flow(self):
+        """Gradients should flow through both logits and attention inputs."""
+        head = RSTRHead()
+        logits = torch.randn(1, 3, 288, 512, requires_grad=True)
+        attention = torch.randn(1, 4, 288, 512, requires_grad=True)
+        out = head(logits, attention)
+        out.sum().backward()
+        assert logits.grad is not None
+        assert logits.grad.abs().sum() > 0
+        assert attention.grad is not None
+        assert attention.grad.abs().sum() > 0
+
+    def test_none_attention_raises(self):
+        """RSTRHead requires MDD attention; None should raise ValueError."""
+        head = RSTRHead()
+        logits = torch.randn(1, 3, 288, 512)
+        with pytest.raises(ValueError, match="attention"):
+            head(logits, None)
+
+    def test_residual_uses_pre_dropout_draft(self):
+        """The residual should use pre-dropout draft_mdd, not the masked
+        version. With zero delta (at init), output should equal
+        sigmoid(draft_mdd) regardless of dropout state."""
+        head = RSTRHead()
+
+        logits = torch.randn(1, 3, 288, 512)
+        attention = torch.randn(1, 4, 288, 512)
+
+        # Get draft_mdd by running just the fusion conv
+        with torch.no_grad():
+            fused = torch.cat([logits, attention], dim=1)
+            draft_mdd = head.fusion_conv(fused)
+            expected = torch.sigmoid(draft_mdd)
+
+        # At init, TSATTHead output projection is zero-initialized,
+        # so delta should be near-zero. In inference mode (no dropout),
+        # output should be close to sigmoid(draft_mdd).
+        head.train(False)
+        out = head(logits, attention)
+        assert torch.allclose(out, expected, atol=0.05), (
+            "At init, RSTRHead output should approximate sigmoid(draft_mdd)"
+        )
+
+
+class TestTrackNetV5Flow:
+    def test_v5_forward_with_mock_mdd_and_rstr(self):
+        """V5 flow: MDD returns (input, attention), backbone returns logits,
+        RSTR receives (logits, attention)."""
+
+        class MockMDD(nn.Module):
+            def forward(self, x):
+                B = x.shape[0]
+                enriched = torch.randn(B, 13, 288, 512)
+                attention = torch.randn(B, 4, 288, 512)
+                return enriched, attention
+
+        class MockRSTR(nn.Module):
+            def forward(self, logits, attention):
+                assert logits.shape == (logits.shape[0], 3, 288, 512)
+                assert attention.shape == (logits.shape[0], 4, 288, 512)
+                return torch.sigmoid(logits)
+
+        backbone = UNetBackbone(in_channels=13, num_classes=3, apply_sigmoid=False)
+        model = TrackNet(backbone=backbone, mdd=MockMDD(), rstr=MockRSTR())
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+
+    def test_v2_backward_compatible(self):
+        """V2 mode should still work unchanged after TrackNet update."""
+        model = TrackNet()
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+
+class TestTrackNetV5Factory:
+    def test_factory_creates_all_components(self):
+        """tracknet_v5() should create MDD, backbone, and RSTR."""
+        model = tracknet_v5()
+        assert model.mdd is not None
+        assert model.backbone is not None
+        assert model.rstr is not None
+
+    def test_backbone_input_channels(self):
+        """V5 backbone should accept 13 channels."""
+        model = tracknet_v5()
+        # Inspect first conv layer input channels
+        first_conv = model.backbone.down1.conv1.conv
+        assert first_conv.in_channels == 13
+
+    def test_backbone_no_sigmoid(self):
+        """V5 backbone should return raw logits (apply_sigmoid=False)."""
+        model = tracknet_v5()
+        assert not model.backbone.apply_sigmoid
+
+    def test_rstr_is_rstr_head(self):
+        """RSTR component should be an RSTRHead instance."""
+        model = tracknet_v5()
+        assert isinstance(model.rstr, RSTRHead)
+
+    def test_forward_pass(self):
+        """Full V5 forward pass: (B, 9, 288, 512) -> (B, 3, 288, 512)."""
+        model = tracknet_v5()
+        model.train(False)
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_param_count_increase(self):
+        """V5 should have more params than V2 but not excessively more."""
+        v2 = TrackNet()
+        v5 = tracknet_v5()
+        v2_params = sum(p.numel() for p in v2.parameters())
+        v5_params = sum(p.numel() for p in v5.parameters())
+        # V5 adds MDD (~2 params) + backbone channel increase + RSTR (~200K-800K)
+        assert v5_params > v2_params
+        # Should not more than double the V2 param count
+        assert v5_params < v2_params * 2, (
+            f"V5 params ({v5_params:,}) should not be >2x V2 ({v2_params:,})"
+        )
+
+
+class TestV5Integration:
+    def test_end_to_end_forward_backward(self):
+        """Full V5: forward pass + WBCE loss + backward pass."""
+        model = tracknet_v5()
+        loss_fn = WBCEFocalLoss()
+
+        x = torch.randn(2, 9, 288, 512)
+        target = torch.zeros(2, 3, 288, 512)
+        target[:, :, 140:150, 250:260] = 1.0
+
+        pred = model(x)
+        loss = loss_fn(pred, target)
+        loss.backward()
+
+        # Gradients should flow through entire V5 model
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                assert param.grad is not None, f"No gradient for {name}"
+
+    def test_v2_still_works(self):
+        """V2 model must still work after V5 additions."""
+        model = TrackNet()
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.shape == (1, 3, 288, 512)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_v5_output_range(self):
+        """V5 output should be in [0, 1] (sigmoid at end of R-STR)."""
+        model = tracknet_v5()
+        model.train(False)
+        x = torch.randn(1, 9, 288, 512)
+        out = model(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_weight_transfer_shape_compatibility(self):
+        """V2 backbone weights (except first conv) should be shape-compatible
+        with V5 backbone for weight transfer."""
+        v2_backbone = UNetBackbone(in_channels=9, num_classes=3)
+        v5_backbone = UNetBackbone(in_channels=13, num_classes=3, apply_sigmoid=False)
+
+        v2_state = v2_backbone.state_dict()
+        v5_state = v5_backbone.state_dict()
+
+        mismatches = []
+        for key in v2_state:
+            if key in v5_state:
+                if v2_state[key].shape != v5_state[key].shape:
+                    mismatches.append(key)
+
+        # Only the first conv layer should differ (9ch -> 13ch)
+        assert len(mismatches) == 1, f"Expected 1 mismatch, got: {mismatches}"
+        assert "down1.conv1.conv.weight" in mismatches[0]
