@@ -33,6 +33,28 @@
    - Head-to-head records and leaderboards
    - REST API (FastAPI) and dashboard (Streamlit)
 
+4. **[MVP Implementation Guide](2026-04-10-mvp-implementation-guide.md)** ⭐ **START HERE**
+   - Console output first (no database/API initially)
+   - Real-time score and stats logging
+   - JSON export for backend integration
+   - Simplified architecture for rapid development
+   - Backend integration guide (when ready)
+
+---
+
+## 🎯 Implementation Strategy
+
+**Phase 1: Console Output MVP** (Weeks 1-5)
+- Output score and stats to console in real-time
+- Export JSON files for your backend to consume
+- No database, no API, no dashboard (keep it simple!)
+- Focus: Get multi-object tracking working end-to-end
+
+**Phase 2: Backend Integration** (Week 6+)
+- POST JSON to your existing backend API
+- Your backend handles: database, user management, authentication
+- TrackNet becomes a "match processor" that feeds your system
+
 ---
 
 ## 🎯 Quick Summary
@@ -151,16 +173,20 @@ inference/
   homography.py            # Pixel → court coordinate mapping
   stats_aggregator.py      # Extract statistics from events
 
+utils/
+  console_logger.py        # Pretty console output (Phase 1)
+  json_exporter.py         # Export match data to JSON (Phase 1)
+
+# Phase 2 - Your Backend Integration (later)
 database/
-  schema.sql               # Database schema (SQLite/PostgreSQL)
-  stats_db.py              # Database interface
+  schema.sql               # [Optional] Reference schema for your backend
+  stats_db.py              # [Optional] If you want local DB
 
 api/
-  stats_api.py             # REST API (FastAPI)
+  backend_client.py        # POST JSON to your backend API
 
 dashboard/
-  app.py                   # Streamlit dashboard
-  requirements.txt         # Dashboard dependencies
+  # Your existing frontend handles this!
 
 scripts/
   train_court_detector.py          # Train court model
@@ -178,9 +204,10 @@ configs/
 ### Documentation
 - [x] System design spec (2026-04-10-multi-object-scoring-system.md)
 - [x] Training guide (2026-04-10-training-guide-multi-camera.md)
-- [x] Player statistics spec (2026-04-10-player-stats-tracking-system.md)
+- [x] Player statistics spec (2026-04-10-player-stats-tracking-system.md) *[Phase 2]*
+- [x] **MVP implementation guide (2026-04-10-mvp-implementation-guide.md)** ← START HERE
 - [ ] User guide (how to use scoring system)
-- [ ] API documentation
+- [ ] API documentation *[Phase 2 - Your Backend]*
 
 ### Data Collection Tools
 - [x] CVAT annotation workflows
@@ -233,27 +260,13 @@ configs/
 
 ## 🔧 Quick Start (for Developers)
 
-### 1. Review Specifications
+### 1. Read the MVP Implementation Guide
 ```bash
-# Read system design
-cat docs/superpowers/specs/2026-04-10-multi-object-scoring-system.md
-
-# Read training guide
-cat docs/superpowers/specs/2026-04-10-training-guide-multi-camera.md
+# This is your starting point!
+cat docs/superpowers/specs/2026-04-10-mvp-implementation-guide.md
 ```
 
-### 2. Download Datasets
-```bash
-# TrackNet Tennis (overhead)
-# Download from: https://drive.google.com/drive/folders/11r0RUaQHX7I3ANkaYG4jOxXK1OYo01Ut
-# Extract to: data/overhead/
-
-# CoachAI Badminton (overhead)
-# Download from: https://nycu1-my.sharepoint.com/...
-# Extract to: data/badminton/
-```
-
-### 3. Install Dependencies
+### 2. Install Dependencies
 ```bash
 # Add to pyproject.toml
 uv add ultralytics  # YOLOv8
@@ -263,11 +276,33 @@ uv add scikit-learn  # For Hungarian algorithm
 uv sync
 ```
 
-### 4. Start with Proof of Concept
+### 3. Implement MVP (Weeks 1-5)
 ```bash
-# Implement basic multi-tracker first
-# See: docs/superpowers/specs/2026-04-10-multi-object-scoring-system.md
-# Section 8: Integration and Pipeline
+# Week 1-2: Multi-object tracking
+# - Implement BoT-SORT tracker (models/trackers/bot_sort.py)
+# - Implement multi-tracker wrapper (models/multi_tracker.py)
+# - Test on sample video
+
+# Week 3-4: Event detection
+# - Implement event detector (inference/event_detector.py)
+# - Test bounce/hit detection
+
+# Week 5: Console output + JSON export
+# - Implement console logger (utils/console_logger.py)
+# - Implement JSON exporter (utils/json_exporter.py)
+# - Integrate with scoring pipeline
+
+# Run first match!
+uv run python main.py score \
+  --video test_match.mp4 \
+  --player1 "Player 1" \
+  --player2 "Player 2"
+```
+
+### 4. Backend Integration (Week 6+)
+```bash
+# When MVP works, POST JSON to your backend
+# See MVP guide Section 7: Backend Integration
 ```
 
 ---
