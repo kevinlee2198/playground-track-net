@@ -40,6 +40,14 @@
    - Simplified architecture for rapid development
    - Backend integration guide (when ready)
 
+5. **[Implementation and Testing Guide](2026-04-10-implementation-testing-guide.md)** 🧪 **HOW TO BUILD**
+   - Week-by-week incremental development plan
+   - Test-driven development approach
+   - Synthetic test data generation
+   - Unit, integration, and E2E testing strategies
+   - Debugging tips and common pitfalls
+   - Performance benchmarking
+
 ---
 
 ## 🎯 Implementation Strategy
