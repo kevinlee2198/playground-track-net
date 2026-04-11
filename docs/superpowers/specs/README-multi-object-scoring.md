@@ -25,6 +25,14 @@
    - Training procedures for each component
    - Transfer learning strategies
 
+3. **[Player Statistics Tracking System](2026-04-10-player-stats-tracking-system.md)**
+   - Player profiles and database schema (SQLite/PostgreSQL)
+   - Match statistics tracking (50+ metrics per player)
+   - Sport-specific stats (tennis/badminton/pickleball)
+   - Aggregate statistics and career tracking
+   - Head-to-head records and leaderboards
+   - REST API (FastAPI) and dashboard (Streamlit)
+
 ---
 
 ## 🎯 Quick Summary
@@ -38,6 +46,9 @@
 | ❌ No court detection | ✅ Court line detection + homography |
 | ❌ No event detection | ✅ Serve, hit, bounce, rally tracking |
 | ❌ No scoring | ✅ Automated point/game/set scoring |
+| ❌ No player stats | ✅ Player profiles + 50+ match stats |
+| ❌ No database | ✅ SQLite database + REST API |
+| ❌ No analytics | ✅ Career stats, trends, leaderboards |
 | ✅ Overhead camera only | ✅ Baseline + side camera support |
 
 ### Architecture
@@ -61,7 +72,13 @@ Event Detector (bounce/hit/serve)
   ↓
 Scoring Engine (tennis rules)
   ↓
-Output: Annotated video + Score + Event log JSON
+Statistics Aggregator (extract 50+ metrics)
+  ↓
+Player Database (SQLite)
+  ↓
+REST API (FastAPI) + Dashboard (Streamlit)
+  ↓
+Output: Annotated video + Score + Stats + Leaderboards
 ```
 
 ---
@@ -132,12 +149,26 @@ inference/
   event_detector.py        # Game event detection
   scoring.py               # Tennis/badminton/pickleball scoring
   homography.py            # Pixel → court coordinate mapping
+  stats_aggregator.py      # Extract statistics from events
+
+database/
+  schema.sql               # Database schema (SQLite/PostgreSQL)
+  stats_db.py              # Database interface
+
+api/
+  stats_api.py             # REST API (FastAPI)
+
+dashboard/
+  app.py                   # Streamlit dashboard
+  requirements.txt         # Dashboard dependencies
 
 scripts/
   train_court_detector.py          # Train court model
   cvat_to_tracknet_csv.py          # Annotation converter
   pre_annotate_with_tracknet.py   # Speedup annotation
   generate_synthetic_baseline.py   # Data augmentation
+  init_database.py                 # Initialize statistics database
+  export_stats.py                  # Export stats to CSV/PDF
 
 configs/
   scoring_tennis.yaml      # Tennis scoring config
@@ -147,6 +178,7 @@ configs/
 ### Documentation
 - [x] System design spec (2026-04-10-multi-object-scoring-system.md)
 - [x] Training guide (2026-04-10-training-guide-multi-camera.md)
+- [x] Player statistics spec (2026-04-10-player-stats-tracking-system.md)
 - [ ] User guide (how to use scoring system)
 - [ ] API documentation
 
