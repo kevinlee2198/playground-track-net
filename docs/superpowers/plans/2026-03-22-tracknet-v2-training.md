@@ -976,6 +976,14 @@ The training subsystem depends on interfaces from other subsystems. During devel
 
 ---
 
+## Training Data Resources
+
+**Court Detection Datasets:**
+- Roboflow Universe Court Datasets: https://universe.roboflow.com/search?q=class%3Acourt
+  - Good source for finding pre-labeled court detection training datasets across multiple sports
+
+---
+
 ## Summary of Deliverables
 
 After all tasks are complete:

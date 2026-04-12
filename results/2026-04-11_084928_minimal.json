@@ -1,0 +1,29 @@
+{
+  "match_id": "2026-04-11_084928",
+  "date": "2026-04-11T08:49:28.734625",
+  "sport": "tennis",
+  "players": [
+    "Roger Federer",
+    "Rafael Nadal"
+  ],
+  "winner": 0,
+  "final_score": "6-0 (FAKE)",
+  "player_stats": [
+    {
+      "player_id": 0,
+      "points": 2,
+      "aces": 1,
+      "winners": 0,
+      "errors": 0,
+      "first_serve_pct": 100.0
+    },
+    {
+      "player_id": 1,
+      "points": 0,
+      "aces": 0,
+      "winners": 0,
+      "errors": 1,
+      "first_serve_pct": 0.0
+    }
+  ]
+}
