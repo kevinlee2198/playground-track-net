@@ -210,6 +210,12 @@ class Trainer:
             )
             self.writer.add_scalar("Metrics/f1", val_metrics["f1"], self.current_epoch)
             self.writer.add_scalar(
+                "Metrics/f1_strict", val_metrics["f1_strict"], self.current_epoch
+            )
+            self.writer.add_scalar(
+                "Metrics/accuracy", val_metrics["accuracy"], self.current_epoch
+            )
+            self.writer.add_scalar(
                 "LR",
                 self.scheduler.get_last_lr()[0],
                 self.current_epoch,

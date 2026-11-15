@@ -12,7 +12,7 @@ import yaml
 from models.losses import WBCEFocalLoss
 from training.evaluate import (
     aggregate_metrics,
-    compute_detection_metrics,
+    classify_frame,
     evaluate_epoch,
     heatmap_to_position,
 )
@@ -179,54 +179,46 @@ def test_heatmap_to_position_no_ball():
     assert detected is False
 
 
-def test_compute_detection_metrics_true_positive():
-    pred = (100.0, 150.0, True)
-    gt = (102.0, 151.0, True)
-    tp, fp, fn = compute_detection_metrics(pred, gt, distance_threshold=4)
-    assert tp == 1 and fp == 0 and fn == 0
+def test_heatmap_to_position_uses_largest_blob():
+    hm = torch.zeros(288, 512)
+    hm[100:110, 200:210] = 1.0  # 100 px
+    hm[20:22, 30:32] = 1.0  # 4 px of noise
+    x, y, detected = heatmap_to_position(hm)
+    assert detected and x == pytest.approx(204.5) and y == pytest.approx(104.5)
 
 
-def test_compute_detection_metrics_false_positive():
-    pred = (100.0, 150.0, True)
-    gt = (200.0, 200.0, True)
-    tp, fp, fn = compute_detection_metrics(pred, gt, distance_threshold=4)
-    assert tp == 0 and fp == 1 and fn == 1
+def test_classify_frame():
+    assert classify_frame((10, 10, True), (12, 10, True), 4.0) == "tp"
+    assert classify_frame((10, 10, True), (20, 10, True), 4.0) == "fp1"
+    assert classify_frame((10, 10, True), (0, 0, False), 4.0) == "fp2"
+    assert classify_frame((0, 0, False), (10, 10, True), 4.0) == "fn"
+    assert classify_frame((0, 0, False), (0, 0, False), 4.0) == "tn"
 
 
-def test_compute_detection_metrics_false_negative():
-    pred = (0.0, 0.0, False)
-    gt = (100.0, 150.0, True)
-    tp, fp, fn = compute_detection_metrics(pred, gt, distance_threshold=4)
-    assert tp == 0 and fp == 0 and fn == 1
+def test_classify_frame_distance_equal_to_threshold_is_tp():
+    assert classify_frame((10, 10, True), (14, 10, True), 4.0) == "tp"
 
 
-def test_compute_detection_metrics_true_negative():
-    pred = (0.0, 0.0, False)
-    gt = (0.0, 0.0, False)
-    tp, fp, fn = compute_detection_metrics(pred, gt, distance_threshold=4)
-    assert tp == 0 and fp == 0 and fn == 0
-
-
-def test_compute_detection_metrics_fp_no_gt():
-    pred = (100.0, 150.0, True)
-    gt = (0.0, 0.0, False)
-    tp, fp, fn = compute_detection_metrics(pred, gt, distance_threshold=4)
-    assert tp == 0 and fp == 1 and fn == 0
-
-
-def test_aggregate_metrics():
-    metrics = aggregate_metrics(tp=7, fp=2, fn=1)
-    assert abs(metrics["precision"] - 7 / 9) < 1e-6
-    assert abs(metrics["recall"] - 7 / 8) < 1e-6
-    expected_f1 = 2 * (7 / 9) * (7 / 8) / ((7 / 9) + (7 / 8))
-    assert abs(metrics["f1"] - expected_f1) < 1e-6
+def test_aggregate_metrics_both_recall_conventions():
+    m = aggregate_metrics({"tp": 8, "tn": 2, "fp1": 1, "fp2": 1, "fn": 2})
+    assert m["precision"] == pytest.approx(0.8)
+    assert m["recall"] == pytest.approx(0.8)
+    assert m["f1"] == pytest.approx(0.8)
+    assert m["recall_strict"] == pytest.approx(8 / 11)
+    assert m["f1_strict"] == pytest.approx(16 / 21)
+    assert m["accuracy"] == pytest.approx(10 / 14)
 
 
 def test_aggregate_metrics_zero_division():
-    metrics = aggregate_metrics(tp=0, fp=0, fn=0)
-    assert metrics["precision"] == 0.0
-    assert metrics["recall"] == 0.0
-    assert metrics["f1"] == 0.0
+    keys = {"precision", "recall", "f1", "recall_strict", "f1_strict", "accuracy"}
+    empty = aggregate_metrics({"tp": 0, "tn": 0, "fp1": 0, "fp2": 0, "fn": 0})
+    assert set(empty) == keys
+    assert all(value == 0.0 for value in empty.values())
+
+    # Only true negatives: every ball-based ratio has a zero denominator.
+    no_ball = aggregate_metrics({"tp": 0, "tn": 5, "fp1": 0, "fp2": 0, "fn": 0})
+    assert all(no_ball[key] == 0.0 for key in keys - {"accuracy"})
+    assert no_ball["accuracy"] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -256,9 +248,57 @@ def test_evaluate_epoch_all_tp():
     model = PerfectModel(outputs=[gt_heatmaps])
     metrics = evaluate_epoch(model, dataloader, torch.device("cpu"))
     assert metrics["tp"] == 6
-    assert metrics["fp"] == 0
+    assert metrics["tn"] == 0
+    assert metrics["fp1"] == 0
+    assert metrics["fp2"] == 0
     assert metrics["fn"] == 0
     assert metrics["f1"] == 1.0
+    assert metrics["f1_strict"] == 1.0
+    assert metrics["accuracy"] == 1.0
+
+
+def test_evaluate_epoch_counts_each_outcome():
+    empty = torch.zeros(288, 512)
+    gt_heatmaps = torch.stack(
+        [
+            torch.stack(
+                [
+                    _make_synthetic_heatmap(100, 150),
+                    _make_synthetic_heatmap(200, 100),
+                    empty,
+                ]
+            ),
+            torch.stack([_make_synthetic_heatmap(300, 200), empty, empty]),
+        ]
+    )
+    preds = torch.stack(
+        [
+            torch.stack(
+                [
+                    _make_synthetic_heatmap(101, 150),  # 1 px off -> tp
+                    _make_synthetic_heatmap(250, 100),  # 50 px off -> fp1
+                    _make_synthetic_heatmap(50, 50),  # no ball in gt -> fp2
+                ]
+            ),
+            torch.stack([empty, empty, empty]),  # fn, tn, tn
+        ]
+    )
+    dataset = TensorDataset(torch.randn(2, 9, 288, 512), gt_heatmaps)
+    dataloader = DataLoader(dataset, batch_size=2)
+    metrics = evaluate_epoch(
+        PerfectModel(outputs=[preds]), dataloader, torch.device("cpu")
+    )
+    assert {k: metrics[k] for k in ("tp", "tn", "fp1", "fp2", "fn")} == {
+        "tp": 1,
+        "tn": 2,
+        "fp1": 1,
+        "fp2": 1,
+        "fn": 1,
+    }
+    assert metrics["precision"] == pytest.approx(1 / 3)
+    assert metrics["recall"] == pytest.approx(1 / 2)
+    assert metrics["recall_strict"] == pytest.approx(1 / 3)
+    assert metrics["accuracy"] == pytest.approx(3 / 6)
 
 
 # ---------------------------------------------------------------------------
