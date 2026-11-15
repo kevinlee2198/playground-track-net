@@ -75,7 +75,7 @@ class Trainer:
             gamma=sched_config["gamma"],
         )
 
-        # Mixed precision. float16 would need a GradScaler, which we don't use.
+        # Mixed precision
         amp_dtype_str = config.get("amp_dtype", "bfloat16")
         if amp_dtype_str == "bfloat16":
             self.amp_dtype = torch.bfloat16
