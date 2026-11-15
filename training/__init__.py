@@ -4,7 +4,7 @@ from training.evaluate import (
     aggregate_metrics,
     evaluate_epoch,
 )
-from training.trainer import Trainer
+from training.trainer import Trainer, ensure_compile_supported
 
 __all__ = [
     "heatmap_to_position",
@@ -12,4 +12,5 @@ __all__ = [
     "aggregate_metrics",
     "evaluate_epoch",
     "Trainer",
+    "ensure_compile_supported",
 ]

@@ -17,7 +17,7 @@ from training.evaluate import (
     evaluate_epoch,
     heatmap_to_position,
 )
-from training.trainer import Trainer
+from training.trainer import Trainer, ensure_compile_supported
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +420,134 @@ def test_checkpoint_from_compiled_model_loads_into_plain_model():
         assert set(ckpt["model_state_dict"]) == set(SimpleModel().state_dict())
         load_model_weights(SimpleModel(), path, torch.device("cpu"))  # must not raise
         trainer.load_checkpoint(path)  # and resumes into the compiled wrapper
+
+
+# Model.compile() imports torch._dynamo, which warns about torch.jit on Python 3.14.
+@pytest.mark.filterwarnings("ignore:`torch.jit.script_method`:DeprecationWarning")
+def test_checkpoint_from_model_compiled_in_place_has_plain_keys():
+    # Module.compile() is lazy; no forward pass, so this needs no compiler.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model = SimpleModel()
+        model.compile()
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(model, SimpleLoss(), ds, ds, _make_test_config(tmpdir))
+        path = trainer._save_checkpoint("c.pt")
+        ckpt = torch.load(path, weights_only=True)
+        assert set(ckpt["model_state_dict"]) == set(SimpleModel().state_dict())
+
+
+def test_max_steps_stops_early():
+    # 4 samples at batch 2 = 2 steps per epoch; max_steps=3 stops mid-epoch 2.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=5) | {"max_steps": 3}
+        ds = _make_synthetic_dataset(num_samples=4)
+        trainer = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        trainer.train()
+        assert trainer.global_step == 3
+        # The epoch in progress still validated and checkpointed once.
+        assert trainer.current_epoch == 2
+        latest = torch.load(
+            os.path.join(tmpdir, "checkpoints", "test", "latest.pt"),
+            weights_only=True,
+        )
+        assert latest["epoch"] == 2
+        assert latest["global_step"] == 3
+
+
+def test_resume_continues_from_next_epoch():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=4)
+        first = Trainer(
+            SimpleModel(), SimpleLoss(), ds, ds, _make_test_config(tmpdir, epochs=1)
+        )
+        first.train()
+        assert first.global_step == 2
+
+        second = Trainer(
+            SimpleModel(), SimpleLoss(), ds, ds, _make_test_config(tmpdir, epochs=2)
+        )
+        second.load_checkpoint(os.path.join(tmpdir, "checkpoints", "test", "latest.pt"))
+        assert second.global_step == 2
+        second.train()
+        assert second.current_epoch == 2
+        assert second.global_step == 4  # 2 restored + 2 new
+
+
+def test_checkpoint_holds_config_and_step():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=1)
+        ds = _make_synthetic_dataset(num_samples=4)
+        Trainer(SimpleModel(), SimpleLoss(), ds, ds, config).train()
+        path = os.path.join(tmpdir, "checkpoints", "test", "latest.pt")
+        ckpt = torch.load(path, weights_only=True)
+        assert ckpt["global_step"] == 2 and ckpt["config"]["batch_size"] == 2
+        # The whole nested config round-trips under weights_only=True.
+        assert ckpt["config"] == config
+
+
+def test_checkpoint_write_leaves_no_temp_file(monkeypatch):
+    saved_to = []
+    real_save = torch.save
+
+    def recording_save(obj, f, *args, **kwargs):
+        saved_to.append(f)
+        real_save(obj, f, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(
+            SimpleModel(), SimpleLoss(), ds, ds, _make_test_config(tmpdir)
+        )
+        monkeypatch.setattr("training.trainer.torch.save", recording_save)
+        path = trainer._save_checkpoint("latest.pt")
+        assert saved_to == [path + ".tmp"]  # written aside, then renamed
+        assert os.listdir(trainer.checkpoint_dir) == ["latest.pt"]
+
+
+def test_train_loader_drops_short_last_batch():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=5)
+        trainer = Trainer(
+            SimpleModel(), SimpleLoss(), ds, ds, _make_test_config(tmpdir)
+        )
+        assert len(trainer.train_loader) == 2
+
+
+def test_step_loss_logged_every_log_every_steps(caplog):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=2) | {"log_every": 1}
+        ds = _make_synthetic_dataset(num_samples=4)
+        trainer = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        with caplog.at_level("INFO", logger="training.trainer"):
+            trainer.train()
+        step_logs = [r for r in caplog.records if r.getMessage().startswith("Step ")]
+        assert len(step_logs) == 4  # 2 epochs x 2 steps, one line per step
+
+
+def test_ensure_compile_supported_reports_failure(monkeypatch):
+    def broken(_fn):
+        raise RuntimeError("Failed to find C compiler")
+
+    monkeypatch.setattr("training.trainer.torch.compile", broken)
+    with pytest.raises(RuntimeError, match="build-essential"):
+        ensure_compile_supported(torch.device("cpu"))
+
+
+def test_ensure_compile_supported_names_the_fix_and_chains_cause(monkeypatch):
+    cause = RuntimeError("Failed to find C compiler")
+
+    def broken(_fn):
+        raise cause
+
+    monkeypatch.setattr("training.trainer.torch.compile", broken)
+    with pytest.raises(RuntimeError, match="compile_model: false") as excinfo:
+        ensure_compile_supported(torch.device("cpu"))
+    assert excinfo.value.__cause__ is cause
+
+
+def test_ensure_compile_supported_passes_when_compile_works(monkeypatch):
+    monkeypatch.setattr("training.trainer.torch.compile", lambda fn: fn)
+    ensure_compile_supported(torch.device("cpu"))  # no error
 
 
 def test_load_model_weights_accepts_checkpoint_and_bare_state_dict(tmp_path):
