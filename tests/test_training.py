@@ -146,7 +146,16 @@ def test_config_loads_from_yaml():
     assert config["epochs"] == 30
     assert config["input_size"] == [512, 288]
     assert config["seq_len"] == 3
-    assert config["heatmap_radius"] == 30
+    assert config["heatmap_radius"] == 2.5
+    assert config["train_stride"] == 1
+    assert config["log_every"] == 100
+    assert config["experiment_name"] == "tennis_v2_baseline"
+    assert config["data"] == {
+        "format": "tennis",
+        "root": "datasets/tennis",
+        "val_groups": ["game7"],
+        "test_groups": ["game8", "game9", "game10"],
+    }
     assert config["num_workers"] == 4
     assert config["pin_memory"] is True
     assert config["persistent_workers"] is True

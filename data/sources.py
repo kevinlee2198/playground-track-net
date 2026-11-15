@@ -37,16 +37,26 @@ def discover_tennis_clips(root: str | Path) -> list[Clip]:
 
     A clip is a directory directly under a game directory that holds a ``Label.csv``;
     anything else at either level is ignored.
+
+    Raises:
+        FileNotFoundError: If ``root`` is not a directory.
+        ValueError: If ``root`` holds no clips, for example because it points one
+            level too deep.
     """
     root = Path(root)
     if not root.is_dir():
         raise FileNotFoundError(f"dataset root not found: {root}")
-    return [
+    clips = [
         Clip(frames_dir=clip_dir, label_path=clip_dir / LABEL_FILE, group=game_dir.name)
         for game_dir in _sorted_dirs(root)
         for clip_dir in _sorted_dirs(game_dir)
         if (clip_dir / LABEL_FILE).is_file()
     ]
+    if not clips:
+        raise ValueError(
+            f"no clips found under {root}: expected root/<game>/<clip>/{LABEL_FILE}"
+        )
+    return clips
 
 
 def split_clips(

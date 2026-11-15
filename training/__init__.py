@@ -5,6 +5,7 @@ from training.evaluate import (
     evaluate_epoch,
 )
 from training.trainer import Trainer, ensure_compile_supported
+from training.run import load_config, run_evaluation, run_training
 
 __all__ = [
     "heatmap_to_position",
@@ -13,4 +14,7 @@ __all__ = [
     "evaluate_epoch",
     "Trainer",
     "ensure_compile_supported",
+    "load_config",
+    "run_evaluation",
+    "run_training",
 ]

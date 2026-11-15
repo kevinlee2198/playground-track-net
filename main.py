@@ -1,6 +1,7 @@
 import argparse
 import csv
-import sys
+import json
+import logging
 from pathlib import Path
 
 from inference.postprocess import heatmap_to_coordinates, trajectory_rectification
@@ -15,14 +16,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Train subcommand (placeholder)
-    _train_parser = subparsers.add_parser("train", help="Train the model")
-    _train_parser.add_argument("--config", type=str, default="configs/default.yaml")
+    # Train subcommand
+    train_parser = subparsers.add_parser("train", help="Train the model")
+    train_parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default.yaml",
+        help="Path to YAML config (default: configs/default.yaml)",
+    )
+    train_parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Stop after this many optimizer steps in total (overrides the config)",
+    )
+    train_parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Trainer checkpoint (.pt) to resume from",
+    )
 
-    # Evaluate subcommand (placeholder)
-    _eval_parser = subparsers.add_parser("evaluate", help="Evaluate the model")
-    _eval_parser.add_argument("--config", type=str, default="configs/default.yaml")
-    _eval_parser.add_argument("--weights", type=str, required=True)
+    # Evaluate subcommand
+    eval_parser = subparsers.add_parser(
+        "evaluate", help="Evaluate a model on the val or test split"
+    )
+    eval_parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default.yaml",
+        help="Path to YAML config (default: configs/default.yaml)",
+    )
+    eval_parser.add_argument(
+        "--weights",
+        type=str,
+        required=True,
+        help="Path to model weights or trainer checkpoint (.pt file)",
+    )
+    eval_parser.add_argument(
+        "--split",
+        choices=["val", "test"],
+        default="test",
+        help="Split to evaluate (default: test)",
+    )
 
     # Infer subcommand
     infer_parser = subparsers.add_parser("infer", help="Run inference on a video")
@@ -193,11 +229,19 @@ def main():
     if args.command == "infer":
         run_inference(args)
     elif args.command == "train":
-        print("Training not yet implemented. See training/ subsystem.")
-        sys.exit(1)
+        from training.run import load_config, run_training
+
+        logging.basicConfig(level=logging.INFO)
+        config = load_config(args.config)
+        if args.max_steps is not None:
+            config["max_steps"] = args.max_steps
+        run_training(config, resume=args.resume)
     elif args.command == "evaluate":
-        print("Evaluation not yet implemented. See training/ subsystem.")
-        sys.exit(1)
+        from training.run import load_config, run_evaluation
+
+        logging.basicConfig(level=logging.INFO)
+        result = run_evaluation(load_config(args.config), args.weights, args.split)
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

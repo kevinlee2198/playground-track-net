@@ -443,6 +443,8 @@ class TestSources:
         )
         assert [len(s[k]) for k in ("train", "val", "test")] == [2, 1, 1]
         assert {c.group for c in s["train"]} == {"game1"}
+        assert {c.group for c in s["val"]} == {"game2"}
+        assert {c.group for c in s["test"]} == {"game3"}
 
     def test_build_dataset_lengths(self, tennis_root):
         clips = discover_tennis_clips(tennis_root)
@@ -467,6 +469,12 @@ class TestSources:
     def test_missing_root_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             discover_tennis_clips(tmp_path / "does-not-exist")
+
+    def test_root_without_clips_raises(self, tennis_root):
+        too_deep = tennis_root / "game1"  # holds clips, not games
+        with pytest.raises(ValueError, match="<game>/<clip>/Label.csv") as err:
+            discover_tennis_clips(too_deep)
+        assert str(too_deep) in str(err.value)
 
 
 # ---------------------------------------------------------------------------
