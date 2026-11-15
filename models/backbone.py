@@ -97,7 +97,7 @@ class UNetBackbone(nn.Module):
         if self.head.bias is not None:
             nn.init.zeros_(self.head.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_logits: bool = False) -> torch.Tensor:
         d1, skip1 = self.down1(x)
         d2, skip2 = self.down2(d1)
         d3, skip3 = self.down3(d2)
@@ -106,4 +106,6 @@ class UNetBackbone(nn.Module):
         u2 = self.up2(u1, skip2)
         u3 = self.up3(u2, skip1)
         logits = self.head(u3)
-        return self.sigmoid(logits) if self.apply_sigmoid else logits
+        if return_logits or not self.apply_sigmoid:
+            return logits
+        return self.sigmoid(logits)

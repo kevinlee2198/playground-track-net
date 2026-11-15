@@ -75,14 +75,17 @@ class Trainer:
             gamma=sched_config["gamma"],
         )
 
-        # Mixed precision
+        # Mixed precision. float16 would need a GradScaler, which we don't use.
         amp_dtype_str = config.get("amp_dtype", "bfloat16")
         if amp_dtype_str == "bfloat16":
             self.amp_dtype = torch.bfloat16
-        elif amp_dtype_str == "float16":
-            self.amp_dtype = torch.float16
-        else:
+        elif amp_dtype_str == "float32":
             self.amp_dtype = None
+        else:
+            raise ValueError(
+                f"Unsupported amp_dtype {amp_dtype_str!r}: use 'bfloat16' or "
+                "'float32' (float16 needs a GradScaler, which Trainer does not use)"
+            )
 
         # TensorBoard
         log_dir = os.path.join(
@@ -109,7 +112,15 @@ class Trainer:
             torch.cuda.manual_seed_all(seed)
 
     def _train_one_epoch(self) -> float:
-        """Run one training epoch. Returns average loss."""
+        """Run one training epoch. Returns average loss.
+
+        The model must accept ``model(frames, return_logits=True)``. Only the
+        forward pass runs under autocast; the loss is computed from float32
+        logits outside it.
+
+        Raises:
+            FloatingPointError: If the loss at any step is NaN or infinite.
+        """
         self.model.train()
         total_loss = 0.0
         num_batches = 0
@@ -120,13 +131,16 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            if self.amp_dtype is not None:
-                with torch.amp.autocast(self.device.type, dtype=self.amp_dtype):
-                    preds = self.model(frames)
-                    loss = self.loss_fn(preds, heatmaps)
-            else:
-                preds = self.model(frames)
-                loss = self.loss_fn(preds, heatmaps)
+            with torch.amp.autocast(
+                self.device.type,
+                dtype=self.amp_dtype,
+                enabled=self.amp_dtype is not None,
+            ):
+                logits = self.model(frames, return_logits=True)
+            loss = self.loss_fn(logits.float(), heatmaps)
+
+            if not torch.isfinite(loss):
+                raise FloatingPointError(f"non-finite loss at step {num_batches}")
 
             loss.backward()
             self.optimizer.step()

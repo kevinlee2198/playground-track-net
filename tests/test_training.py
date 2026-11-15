@@ -1,12 +1,15 @@
 import glob as glob_module
+import math
 import os
 import tempfile
 
+import pytest
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
+from models.losses import WBCEFocalLoss
 from training.evaluate import (
     aggregate_metrics,
     compute_detection_metrics,
@@ -29,15 +32,16 @@ class SimpleModel(nn.Module):
         self.conv = nn.Conv2d(9, 3, 1)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
-        return self.sigmoid(self.conv(x))
+    def forward(self, x, return_logits=False):
+        logits = self.conv(x)
+        return logits if return_logits else self.sigmoid(logits)
 
 
 class SimpleLoss(nn.Module):
-    """Simple BCE loss for testing."""
+    """Simple BCE loss on logits for testing."""
 
-    def forward(self, pred, target):
-        return nn.functional.binary_cross_entropy(pred, target)
+    def forward(self, logits, target):
+        return nn.functional.binary_cross_entropy_with_logits(logits, target)
 
 
 class PerfectModel(nn.Module):
@@ -260,6 +264,37 @@ def test_trainer_runs_one_epoch():
         )
         trainer.train()
         assert trainer.current_epoch == 1
+
+
+def test_training_loss_finite_under_bf16_autocast():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model = SimpleModel()
+        assert model.conv.bias is not None
+        nn.init.constant_(model.conv.bias, 20.0)  # confident everywhere
+        config = _make_test_config(tmpdir) | {"amp_dtype": "bfloat16"}
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(model, WBCEFocalLoss(), ds, ds, config)
+        assert math.isfinite(trainer._train_one_epoch())
+
+
+def test_non_finite_loss_stops_training():
+    class NanLoss(nn.Module):
+        def forward(self, logits, target):
+            return logits.sum() * float("nan")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(SimpleModel(), NanLoss(), ds, ds, _make_test_config(tmpdir))
+        with pytest.raises(FloatingPointError, match="step"):
+            trainer._train_one_epoch()
+
+
+def test_float16_amp_is_rejected():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"amp_dtype": "float16"}
+        ds = _make_synthetic_dataset()
+        with pytest.raises(ValueError, match="float16"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
 
 
 def test_checkpoint_save_load_roundtrip():
