@@ -32,10 +32,10 @@ class Trainer:
         # Reproducibility
         self._set_seed(config["seed"])
 
-        # Model
+        # Model. Compile in place so state_dict keys stay unprefixed.
         self.model = model.to(self.device)
         if config.get("compile_model", False) and self.device.type == "cuda":
-            self.model = torch.compile(self.model)
+            self.model.compile()
 
         # Loss
         self.loss_fn = loss_fn.to(self.device)
@@ -150,13 +150,19 @@ class Trainer:
 
         return total_loss / max(num_batches, 1)
 
+    @property
+    def _unwrapped_model(self) -> nn.Module:
+        """The model without a ``torch.compile`` wrapper, whose state_dict keys
+        carry no ``_orig_mod.`` prefix."""
+        return getattr(self.model, "_orig_mod", self.model)
+
     def _save_checkpoint(self, filename: str) -> str:
         """Save model checkpoint. Returns the file path."""
         path = os.path.join(self.checkpoint_dir, filename)
         torch.save(
             {
                 "epoch": self.current_epoch,
-                "model_state_dict": self.model.state_dict(),
+                "model_state_dict": self._unwrapped_model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "scheduler_state_dict": self.scheduler.state_dict(),
                 "best_f1": self.best_f1,
@@ -168,7 +174,7 @@ class Trainer:
     def load_checkpoint(self, path: str) -> None:
         """Load a checkpoint from disk."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self._unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         self.current_epoch = checkpoint["epoch"]

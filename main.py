@@ -78,14 +78,10 @@ def run_inference(args: argparse.Namespace) -> None:
 
     print(f"Loading model from {args.model}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Model loading assumes models/tracknet.py exists and provides TrackNet class
-    # This will be implemented by the model subsystem
-    from models.tracknet import TrackNet
+    from models import TrackNet, load_model_weights
 
     model = TrackNet()
-    model.load_state_dict(
-        torch.load(args.model, map_location=device, weights_only=True)
-    )
+    load_model_weights(model, args.model, device)
     model.to(device)
 
     # 4. Run inference on each window

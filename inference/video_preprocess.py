@@ -8,8 +8,10 @@ TARGET_HEIGHT = 288
 
 
 def preprocess_frame(frame: np.ndarray) -> np.ndarray:
-    """Resize frame to 512x288, normalize to [0,1], return as (C, H, W) float32."""
-    resized = cv2.resize(frame, (TARGET_WIDTH, TARGET_HEIGHT))
+    """Convert an OpenCV BGR frame to RGB (the order the model is trained on),
+    resize to 512x288, normalize to [0,1], return as (C, H, W) float32."""
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    resized = cv2.resize(rgb, (TARGET_WIDTH, TARGET_HEIGHT))
     normalized = resized.astype(np.float32) / 255.0
     return np.transpose(normalized, (2, 0, 1))  # HWC -> CHW
 

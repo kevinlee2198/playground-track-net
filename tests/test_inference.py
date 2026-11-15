@@ -31,6 +31,14 @@ class TestPreprocessFrame:
         np.testing.assert_allclose(result, expected, atol=1e-2)
 
 
+def test_preprocess_frame_converts_bgr_to_rgb():
+    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+    bgr[..., 0] = 255  # pure blue in OpenCV order
+    out = preprocess_frame(bgr)
+    assert out.shape == (3, 288, 512)
+    assert out[2].min() == 1.0 and out[0].max() == 0.0
+
+
 class TestCreateSlidingWindows:
     def test_basic_stride3(self):
         """9 frames -> 3 windows of 3, stride=3, no overlap."""

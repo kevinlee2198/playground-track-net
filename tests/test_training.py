@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import yaml
 
+from models import load_model_weights
 from models.losses import WBCEFocalLoss
 from training.evaluate import (
     aggregate_metrics,
@@ -297,6 +298,7 @@ def test_evaluate_epoch_counts_each_outcome():
     }
     assert metrics["precision"] == pytest.approx(1 / 3)
     assert metrics["recall"] == pytest.approx(1 / 2)
+    assert metrics["f1"] == pytest.approx(0.4)
     assert metrics["recall_strict"] == pytest.approx(1 / 3)
     assert metrics["accuracy"] == pytest.approx(3 / 6)
 
@@ -398,6 +400,44 @@ def test_checkpoint_save_load_roundtrip():
         assert trainer2.best_f1 == original_best_f1
         for key in original_state:
             assert torch.equal(trainer2.model.state_dict()[key], original_state[key])
+
+
+# torch.compile imports torch._dynamo, which warns about torch.jit on Python 3.14.
+@pytest.mark.filterwarnings("ignore:`torch.jit.script_method`:DeprecationWarning")
+def test_checkpoint_from_compiled_model_loads_into_plain_model():
+    # torch.compile wraps lazily, so this needs no compiler.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(
+            torch.compile(SimpleModel()),
+            SimpleLoss(),
+            ds,
+            ds,
+            _make_test_config(tmpdir),
+        )
+        path = trainer._save_checkpoint("c.pt")
+        ckpt = torch.load(path, weights_only=True)
+        assert set(ckpt["model_state_dict"]) == set(SimpleModel().state_dict())
+        load_model_weights(SimpleModel(), path, torch.device("cpu"))  # must not raise
+        trainer.load_checkpoint(path)  # and resumes into the compiled wrapper
+
+
+def test_load_model_weights_accepts_checkpoint_and_bare_state_dict(tmp_path):
+    source = SimpleModel()
+    torch.save({"epoch": 1, "model_state_dict": source.state_dict()}, tmp_path / "c.pt")
+    torch.save(source.state_dict(), tmp_path / "bare.pt")
+    for name in ("c.pt", "bare.pt"):
+        target = SimpleModel()
+        load_model_weights(target, tmp_path / name, torch.device("cpu"))
+        for key, value in source.state_dict().items():
+            assert torch.equal(target.state_dict()[key], value), (name, key)
+
+
+def test_load_model_weights_wrong_architecture_raises(tmp_path):
+    path = tmp_path / "c.pt"
+    torch.save({"model_state_dict": SimpleModel().state_dict()}, path)
+    with pytest.raises(RuntimeError, match="loading state_dict"):
+        load_model_weights(nn.Conv2d(9, 3, 3), path, torch.device("cpu"))
 
 
 # ---------------------------------------------------------------------------
