@@ -67,10 +67,10 @@ class TrackNetDataset(Dataset):
         self.frame_paths = [frame_files[label.frame] for label in self.labels]
         self.num_frames = len(self.frame_paths)
 
-        first = self._imread(0)
-        self.source_size: tuple[int, int] = (first.shape[1], first.shape[0])
-        self._scale_x = width / self.source_size[0]
-        self._scale_y = height / self.source_size[1]
+        source_height, source_width = self._imread(0).shape[:2]
+        self.source_size: tuple[int, int] = (source_width, source_height)
+        self._scale_x = width / source_width
+        self._scale_y = height / source_height
 
         last_start = max(self.num_frames - FRAMES_PER_SAMPLE + 1, 1)
         self.window_starts = list(range(0, last_start, stride))
