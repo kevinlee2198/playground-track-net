@@ -2,6 +2,7 @@
 
 import csv
 import logging
+import re
 from pathlib import Path
 
 import cv2
@@ -183,15 +184,19 @@ def test_label_overlay_marker_at_rescaled_position(tennis_root, tmp_path):
     assert frame[cy, cx + 12].max() == 0  # nothing drawn outside the circle
 
 
-def test_label_overlay_crop_stays_centred_at_frame_edge(tennis_root, tmp_path):
+def _move_test_label(tennis_root, x, y):
+    """Move the ball of game3/Clip1 frame 0001 (visible, uniform grey 20) to (x, y)."""
     label_path = tennis_root / "game3" / "Clip1" / "Label.csv"
     with open(label_path, newline="") as f:
         rows = list(csv.reader(f))
-    # Frame 0001 (uniform grey 20): move its ball to the top-left corner.
-    rows[2][2:4] = ["0", "0"]
+    rows[2][2:4] = [str(x), str(y)]
     with open(label_path, "w", newline="") as f:
         csv.writer(f).writerows(rows)
+    return label_path
 
+
+def test_label_overlay_crop_stays_centred_at_frame_edge(tennis_root, tmp_path):
+    _move_test_label(tennis_root, 0, 0)
     write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
     img = cv2.imread(str(tmp_path / "test_game3_Clip1_0001.png"))
     assert img is not None
@@ -207,3 +212,32 @@ def test_label_overlays_log_split_counts(tennis_root, tmp_path, caplog):
     log = caplog.text
     assert "train: 2 clips, 12 frames, visibility {0: 2, 1: 6, 2: 2, 3: 2}" in log
     assert "test: 1 clips, 6 frames, visibility {0: 1, 1: 3, 2: 1, 3: 1}" in log
+
+
+def test_label_overlay_drawn_for_label_outside_frame(tennis_root, tmp_path, caplog):
+    label_path = _move_test_label(tennis_root, 1400, 355)  # frame is 1280 wide
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        paths = write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
+    path = tmp_path / "test_game3_Clip1_0001.png"
+    assert path in paths
+    img = cv2.imread(str(path))
+    assert img is not None
+    assert img.shape == (288, 768, 3)
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        str(label_path) in m and "frame 1" in m and "(1400.0, 355.0)" in m
+        for m in warnings
+    ), warnings
+
+
+def test_label_overlays_count_visible_labels_outside_frame(
+    tennis_root, tmp_path, caplog
+):
+    _move_test_label(tennis_root, 1400, 355)
+    # count=3 draws frame 0002 of the test clip, not the moved frame 0001: the
+    # count covers every label row, not only those drawn.
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+    for split, outside in (("train", 0), ("val", 0), ("test", 1)):
+        line = rf"{split}: \d+ clips, .*, {outside} visible labels outside the frame"
+        assert re.search(line, caplog.text), (split, caplog.text)

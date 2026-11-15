@@ -18,6 +18,7 @@ from data import (
     Compose,
     FrameColorJitter,
     HorizontalFlip,
+    Label,
     TrackNetDataset,
     build_dataset,
     discover_tennis_clips,
@@ -212,11 +213,13 @@ def write_label_overlays(
         for clip in clips:
             visibility.update(visibility_counts(clip.label_path))
         logger.info(
-            "%s: %d clips, %d frames, visibility %s",
+            "%s: %d clips, %d frames, visibility %s, "
+            "%d visible labels outside the frame",
             split,
             len(clips),
             sum(clip.num_frames for clip in clips),
             dict(sorted(visibility.items())),
+            sum(_outside_frame(clip, label) for clip in clips for label in clip.labels),
         )
         candidates[split] = [
             (clip, i)
@@ -259,25 +262,41 @@ def _round_robin_shares(total: int, capacities: dict[str, int]) -> dict[str, int
     return shares
 
 
+def _outside_frame(clip: TrackNetDataset, label: Label) -> bool:
+    """Whether ``label`` is visible but lies outside ``clip``'s source frame."""
+    source_width, source_height = clip.source_size
+    return label.visible and not (
+        0 <= label.x < source_width and 0 <= label.y < source_height
+    )
+
+
 def _label_overlay(clip: TrackNetDataset, i: int) -> np.ndarray:
     """Frame ``i`` at model resolution with its label circled, beside an enlarged crop.
 
-    Raises:
-        ValueError: If the label lies outside the frame.
+    A label outside the frame is still drawn, at its true position, which is
+    off the frame or in the crop's padding, and a warning is logged; training
+    accepts such labels too.
     """
     width, height = clip.width, clip.height
     source_width, source_height = clip.source_size
     label = clip.labels[i]
+    if _outside_frame(clip, label):
+        logger.warning(
+            "%s: label of frame %d at (%s, %s) lies outside the %dx%d frame",
+            clip.label_path,
+            label.frame,
+            label.x,
+            label.y,
+            source_width,
+            source_height,
+        )
     # The same rescaling TrackNetDataset applies to its heatmap targets.
     x = label.x * width / source_width
     y = label.y * height / source_height
     cx, cy = round(x), round(y)
-    # cx == width can come from rounding a label on the last column; the padding covers it.
-    if not (0 <= cx <= width and 0 <= cy <= height):
-        raise ValueError(
-            f"{clip.label_path}: label of frame {label.frame} at ({label.x}, "
-            f"{label.y}) lies outside the {source_width}x{source_height} frame"
-        )
+    # Crop origin in padded coordinates; clamped so the crop stays inside the
+    # padded frame when the label lies beyond its edge.
+    ox, oy = min(max(cx, 0), width), min(max(cy, 0), height)
 
     image = cv2.imread(str(clip.frame_paths[i]))
     if image is None:
@@ -287,14 +306,14 @@ def _label_overlay(clip: TrackNetDataset, i: int) -> np.ndarray:
     # Pad so a label near the edge still sits at the centre of its crop.
     half = CROP_SIZE // 2
     padded = cv2.copyMakeBorder(frame, half, half, half, half, cv2.BORDER_CONSTANT)
-    crop = padded[cy : cy + CROP_SIZE, cx : cx + CROP_SIZE]
+    crop = padded[oy : oy + CROP_SIZE, ox : ox + CROP_SIZE]
     enlarged = cv2.resize(
         crop, None, fx=CROP_ZOOM, fy=CROP_ZOOM, interpolation=cv2.INTER_NEAREST
     )
     # Each model pixel p covers enlarged pixels [4p, 4p + 3]; its centre is 4p + 1.5.
     centre = (
-        round((x - cx + half) * CROP_ZOOM + (CROP_ZOOM - 1) / 2),
-        round((y - cy + half) * CROP_ZOOM + (CROP_ZOOM - 1) / 2),
+        round((x - ox + half) * CROP_ZOOM + (CROP_ZOOM - 1) / 2),
+        round((y - oy + half) * CROP_ZOOM + (CROP_ZOOM - 1) / 2),
     )
     cv2.circle(enlarged, centre, MARKER_RADIUS * CROP_ZOOM, MARKER_BGR, 1)
     cv2.circle(frame, (cx, cy), MARKER_RADIUS, MARKER_BGR, 1)
