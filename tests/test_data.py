@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from data.dataset import TrackNetDataset
 from data.heatmap import generate_heatmap
-from data.labels import load_labels
+from data.labels import load_labels, visibility_counts
 from data.sources import build_dataset, discover_tennis_clips, split_clips
 from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
 
@@ -126,6 +126,10 @@ class TestLoadLabels:
         assert (labels[0].x, labels[0].y) == (640.0, 360.0)
         assert (labels[3].x, labels[3].y) == (0.0, 0.0)
         assert (labels[4].x, labels[4].y) == (0.0, 0.0)
+
+    def test_visibility_counts_are_raw_values(self, tennis_root):
+        counts = visibility_counts(tennis_root / "game1" / "Clip1" / "Label.csv")
+        assert counts == {0: 1, 1: 3, 2: 1, 3: 1}
 
     def test_internal_layout(self, sample_frames_dir):
         _, csv_path = sample_frames_dir

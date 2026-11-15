@@ -60,6 +60,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Split to evaluate (default: test)",
     )
 
+    # Check-data subcommand
+    check_parser = subparsers.add_parser(
+        "check-data",
+        help="Draw labels on sample frames of every split and log label counts",
+    )
+    check_parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default.yaml",
+        help="Path to YAML config (default: configs/default.yaml)",
+    )
+    check_parser.add_argument(
+        "--out",
+        type=str,
+        required=True,
+        help="Directory to write the overlay PNGs to",
+    )
+    check_parser.add_argument(
+        "--count",
+        type=int,
+        default=12,
+        help="Number of overlays, spread across train, val and test (default: 12)",
+    )
+
     # Infer subcommand
     infer_parser = subparsers.add_parser("infer", help="Run inference on a video")
     infer_parser.add_argument(
@@ -242,6 +266,12 @@ def main():
         logging.basicConfig(level=logging.INFO)
         result = run_evaluation(load_config(args.config), args.weights, args.split)
         print(json.dumps(result, indent=2))
+    elif args.command == "check-data":
+        from training.run import load_config, write_label_overlays
+
+        logging.basicConfig(level=logging.INFO)
+        paths = write_label_overlays(load_config(args.config), args.out, args.count)
+        print(f"Wrote {len(paths)} overlays to {args.out}")
 
 
 if __name__ == "__main__":

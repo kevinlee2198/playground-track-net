@@ -47,6 +47,7 @@ class TrackNetDataset(Dataset):
         self.stride = stride
         self.transform = transform
 
+        self.label_path = Path(label_path)
         self.labels = load_labels(label_path)
         frame_files = {
             int(p.stem): p

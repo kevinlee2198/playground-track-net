@@ -1,12 +1,15 @@
-"""Train or evaluate a TrackNet model on the dataset a config names."""
+"""Train or evaluate a TrackNet model on the dataset a config names, or check its labels."""
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
+import cv2
+import numpy as np
 import torch
 import yaml
 from torch.utils.data import ConcatDataset, DataLoader
@@ -19,6 +22,7 @@ from data import (
     build_dataset,
     discover_tennis_clips,
     split_clips,
+    visibility_counts,
 )
 from models import TrackNet, WBCEFocalLoss, load_model_weights
 from training.evaluate import OUTCOMES, evaluate_epoch
@@ -171,3 +175,132 @@ def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
     }
     frames = sum(metrics["model_res_4px"][outcome] for outcome in OUTCOMES)
     return {"split": split, "frames": frames, **metrics}
+
+
+SPLITS = ("train", "val", "test")
+MARKER_BGR = (255, 0, 255)  # magenta: stands out on court colours and a yellow ball
+MARKER_RADIUS = 6  # px at model resolution
+CROP_SIZE = 64  # px at model resolution, centred on the label
+CROP_ZOOM = 4
+
+
+def write_label_overlays(
+    config: dict, out_dir: str | Path, count: int = 12
+) -> list[Path]:
+    """Write PNGs of visible-ball labels drawn on their frames, for a human to check.
+
+    The datasets are built exactly as for training, so a clip that would break
+    training raises here with the same error. ``count`` visible-ball frames are
+    shared out across the train, val and test splits in turn (each split gets one
+    before any gets two) and evenly spaced within each split; if the splits hold
+    fewer, all of them are written. Each PNG shows the frame at model resolution
+    with a hollow circle at the rescaled label, beside a 4x enlargement of the
+    64x64 region centred on the label. Files are named
+    ``<split>_<game>_<clip>_<frame>.png``.
+
+    Logs, per split, the clip count, the frame count and how many label rows
+    hold each raw visibility value.
+
+    Returns:
+        The written paths: train first, then val, then test, each in clip and
+        frame order.
+    """
+    candidates: dict[str, list[tuple[TrackNetDataset, int]]] = {}
+    for split, dataset in _build_datasets(config, SPLITS).items():
+        clips = [cast(TrackNetDataset, d) for d in dataset.datasets]
+        visibility: Counter[int] = Counter()
+        for clip in clips:
+            visibility.update(visibility_counts(clip.label_path))
+        logger.info(
+            "%s: %d clips, %d frames, visibility %s",
+            split,
+            len(clips),
+            sum(clip.num_frames for clip in clips),
+            dict(sorted(visibility.items())),
+        )
+        candidates[split] = [
+            (clip, i)
+            for clip in clips
+            for i, label in enumerate(clip.labels)
+            if label.visible
+        ]
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shares = _round_robin_shares(count, {s: len(c) for s, c in candidates.items()})
+    paths = []
+    for split, n in shares.items():
+        frames = candidates[split]
+        for k in range(n):
+            clip, i = frames[(2 * k + 1) * len(frames) // (2 * n)]  # evenly spaced
+            game, clip_name = clip.frames_dir.parent.name, clip.frames_dir.name
+            stem = clip.frame_paths[i].stem
+            path = out_dir / f"{split}_{game}_{clip_name}_{stem}.png"
+            if not cv2.imwrite(str(path), _label_overlay(clip, i)):
+                raise OSError(f"failed to write {path}")
+            paths.append(path)
+    if len(paths) < count:
+        logger.warning(
+            "only %d visible-ball frames in the dataset, fewer than the %d asked for",
+            len(paths),
+            count,
+        )
+    return paths
+
+
+def _round_robin_shares(total: int, capacities: dict[str, int]) -> dict[str, int]:
+    """Deal ``total`` items out one at a time to each key in turn, up to its capacity."""
+    shares = dict.fromkeys(capacities, 0)
+    while total > 0 and any(shares[k] < capacities[k] for k in shares):
+        for key in shares:
+            if total > 0 and shares[key] < capacities[key]:
+                shares[key] += 1
+                total -= 1
+    return shares
+
+
+def _label_overlay(clip: TrackNetDataset, i: int) -> np.ndarray:
+    """Frame ``i`` at model resolution with its label circled, beside an enlarged crop.
+
+    Raises:
+        ValueError: If the label lies outside the frame.
+    """
+    width, height = clip.width, clip.height
+    source_width, source_height = clip.source_size
+    label = clip.labels[i]
+    # The same rescaling TrackNetDataset applies to its heatmap targets.
+    x = label.x * width / source_width
+    y = label.y * height / source_height
+    cx, cy = round(x), round(y)
+    # cx == width can come from rounding a label on the last column; the padding covers it.
+    if not (0 <= cx <= width and 0 <= cy <= height):
+        raise ValueError(
+            f"{clip.label_path}: label of frame {label.frame} at ({label.x}, "
+            f"{label.y}) lies outside the {source_width}x{source_height} frame"
+        )
+
+    image = cv2.imread(str(clip.frame_paths[i]))
+    if image is None:
+        raise RuntimeError(f"Failed to read image: {clip.frame_paths[i]}")
+    frame = cv2.resize(image, (width, height))
+
+    # Pad so a label near the edge still sits at the centre of its crop.
+    half = CROP_SIZE // 2
+    padded = cv2.copyMakeBorder(frame, half, half, half, half, cv2.BORDER_CONSTANT)
+    crop = padded[cy : cy + CROP_SIZE, cx : cx + CROP_SIZE]
+    enlarged = cv2.resize(
+        crop, None, fx=CROP_ZOOM, fy=CROP_ZOOM, interpolation=cv2.INTER_NEAREST
+    )
+    # Each model pixel p covers enlarged pixels [4p, 4p + 3]; its centre is 4p + 1.5.
+    centre = (
+        round((x - cx + half) * CROP_ZOOM + (CROP_ZOOM - 1) / 2),
+        round((y - cy + half) * CROP_ZOOM + (CROP_ZOOM - 1) / 2),
+    )
+    cv2.circle(enlarged, centre, MARKER_RADIUS * CROP_ZOOM, MARKER_BGR, 1)
+    cv2.circle(frame, (cx, cy), MARKER_RADIUS, MARKER_BGR, 1)
+
+    side = CROP_SIZE * CROP_ZOOM
+    canvas = np.zeros((max(height, side), width + side, 3), dtype=np.uint8)
+    canvas[:height, :width] = frame
+    canvas[:side, width:] = enlarged
+    return canvas

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import math
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,27 @@ def load_labels(
 
     labels.sort(key=lambda label: label.frame)
     return labels
+
+
+def visibility_counts(path: str | Path) -> dict[int, int]:
+    """Number of rows for each raw visibility value, in ascending value order.
+
+    Unlike ``load_labels``, values are not mapped to visible / not visible, so a
+    value the loader would silently treat as "not visible" shows up here.
+    """
+    path = Path(path)
+    counts: Counter[int] = Counter()
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        _, vis_col, _, _ = _detect_columns(reader.fieldnames, path)
+        for row in reader:
+            try:
+                counts[int(row[vis_col])] += 1
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"{path}, line {reader.line_num}: cannot parse visibility: {e}"
+                ) from e
+    return dict(sorted(counts.items()))
 
 
 def _detect_columns(
