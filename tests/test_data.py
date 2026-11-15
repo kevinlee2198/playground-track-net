@@ -3,11 +3,13 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader
 
 from data.dataset import TrackNetDataset
 from data.heatmap import generate_heatmap
+from data.labels import load_labels
 from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
 
 
@@ -86,6 +88,75 @@ def _write_sample_dataset(
         writer.writerow(["Frame", "Visibility", "X", "Y"])
         for row in labels:
             writer.writerow(row)
+
+
+class TestLoadLabels:
+    @staticmethod
+    def _write_csv(path: Path, header: list[str], rows: list[tuple]) -> Path:
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+        return path
+
+    def test_tennis_layout(self, tennis_root):
+        labels = load_labels(tennis_root / "game1" / "Clip1" / "Label.csv")
+        assert [label.frame for label in labels] == [0, 1, 2, 3, 4, 5]
+        assert [label.visible for label in labels] == [
+            True,
+            True,
+            True,
+            False,
+            False,
+            True,
+        ]
+        assert (labels[0].x, labels[0].y) == (640.0, 360.0)
+        assert (labels[3].x, labels[3].y) == (0.0, 0.0)
+
+    def test_internal_layout(self, sample_frames_dir):
+        _, csv_path = sample_frames_dir
+        labels = load_labels(csv_path)
+        assert [label.visible for label in labels] == [
+            True,
+            True,
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ]
+
+    def test_visible_row_without_coordinates_raises(self, tmp_path):
+        path = self._write_csv(
+            tmp_path / "Label.csv",
+            ["file name", "visibility", "x-coordinate", "y-coordinate", "status"],
+            [("0000.jpg", 1, 640, 360, 0), ("0001.jpg", 1, "", "", "")],
+        )
+        with pytest.raises(ValueError, match="coordinates") as exc_info:
+            load_labels(path)
+        assert str(path) in str(exc_info.value)
+
+    def test_duplicate_frame_raises(self, tmp_path):
+        path = self._write_csv(
+            tmp_path / "labels.csv",
+            ["Frame", "Visibility", "X", "Y"],
+            [(0, 1, 100, 80), (1, 1, 110, 85), (1, 1, 120, 90)],
+        )
+        with pytest.raises(ValueError, match="duplicate") as exc_info:
+            load_labels(path)
+        assert str(path) in str(exc_info.value)
+
+    def test_unknown_header_raises(self, tmp_path):
+        path = self._write_csv(
+            tmp_path / "labels.csv",
+            ["frame_id", "vis", "cx", "cy"],
+            [(0, 1, 100, 80)],
+        )
+        with pytest.raises(ValueError, match="header") as exc_info:
+            load_labels(path)
+        assert str(path) in str(exc_info.value)
 
 
 class TestTrackNetDataset:
@@ -278,12 +349,16 @@ class TestCompose:
 class TestPackageImports:
     def test_imports(self):
         from data import (
+            Label,
             TrackNetDataset,
             generate_heatmap,
+            load_labels,
         )
 
         assert TrackNetDataset is not None
         assert generate_heatmap is not None
+        assert Label is not None
+        assert load_labels is not None
 
 
 class TestDataLoader:

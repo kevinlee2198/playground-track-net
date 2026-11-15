@@ -39,3 +39,36 @@ def sample_frames_dir(tmp_path: Path) -> tuple[Path, Path]:
             writer.writerow(row)
 
     return frames_dir, csv_path
+
+
+TENNIS_LABEL_ROWS = [  # file name, visibility, x, y, status — 1280x720 coordinates
+    ("0000.jpg", 1, 640, 360, 0),
+    ("0001.jpg", 1, 650, 355, 0),
+    ("0002.jpg", 2, 660, 350, 0),
+    ("0003.jpg", 0, "", "", ""),
+    ("0004.jpg", 3, 680, 340, 0),
+    ("0005.jpg", 1, 690, 335, 0),
+]
+TENNIS_CLIPS = ("game1/Clip1", "game1/Clip2", "game2/Clip1", "game3/Clip1")
+
+
+@pytest.fixture
+def tennis_root(tmp_path: Path) -> Path:
+    """Create a miniature TrackNet tennis dataset: game*/Clip*/ with JPEGs + Label.csv.
+
+    Frames are 1280x720; frame ``i`` is a uniform grey of level ``20 * i``.
+    """
+    root = tmp_path / "tennis"
+    for clip in TENNIS_CLIPS:
+        clip_dir = root / clip
+        clip_dir.mkdir(parents=True)
+        for i, (file_name, *_) in enumerate(TENNIS_LABEL_ROWS):
+            img = np.full((720, 1280, 3), 20 * i, dtype=np.uint8)
+            cv2.imwrite(str(clip_dir / file_name), img)
+        with open(clip_dir / "Label.csv", "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                ["file name", "visibility", "x-coordinate", "y-coordinate", "status"]
+            )
+            writer.writerows(TENNIS_LABEL_ROWS)
+    return root
