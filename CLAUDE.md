@@ -3,13 +3,15 @@
 ## Project
 TrackNet V2 ball tracking for tennis, badminton, pickleball. PyTorch U-Net heatmap detector.
 Design spec: docs/superpowers/specs/2026-03-21-tracknet-ball-tracking-design.md
+Current state and open decisions: docs/2026-11-15-pre-training-review.md
+Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
 - `uv sync` — install deps
 - `uv run pytest tests/ -v` — run all tests (166 tests, ~50s)
 - `uv run ruff format .` — format code
 - `uv run ruff check --fix .` — lint and auto-fix
-- `uv run ty` — type check
+- `uv run ty check` — type check (18 pre-existing diagnostics as of 2026-11-15)
 - `uv run pytest tests/test_models.py -v` — model tests only
 - `uv run pytest tests/test_data.py -v` — data tests only
 - `uv run pytest tests/test_training.py -v` — training tests only
@@ -41,9 +43,19 @@ Design spec: docs/superpowers/specs/2026-03-21-tracknet-ball-tracking-design.md
 - Model tests use small tensors (batch=1-2, 288x512) to keep them fast
 - Training tests use stub models (not real TrackNet) for isolation
 
+## Status (2026-11-15)
+- Nothing has been trained on real data. The first run is V2 on tennis; V5 is deferred.
+- The code is NOT ready to train. Blocking defects are listed in docs/2026-11-15-pre-training-review.md §4:
+  loss NaN under bf16, labels not rescaled to 512x288, label loader only parses our own CSV layout,
+  BGR/RGB mismatch at inference, `infer` can't load trainer checkpoints, `train`/`evaluate` CLI stubbed.
+- Agreed recipe changes, not yet in code: heatmap radius 30 -> 2.5, training stride 3 -> 1,
+  colour jitter once per window, evaluation aligned with published conventions.
+- Passing tests do not mean the pipeline works on real data: fixtures are 512x288 and training tests use stub models.
+
 ## Gotchas
 - CUDA driver warning is expected in WSL2 (tests run on CPU fine)
 - Input resolution is always 512x288 (static, required for torch.compile)
 - Skip connections tapped BEFORE MaxPool in encoder
 - Sigmoid applied in UNetBackbone output head — V5 will need this moved
-- Python 3.14 upgrade coming ~April 2026, all deps must be forward-compatible
+- Python 3.14 since 2026-11-15 (pinned in .python-version, interpreter managed by uv; system python is still 3.12). pyproject keeps requires-python >=3.12
+- No C compiler (gcc) on this machine, so torch.compile fails at the first forward pass. configs/default.yaml has compile_model: true — install build-essential or set it false before training

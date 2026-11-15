@@ -1,8 +1,22 @@
 # TrackNet Ball Tracking System — Design Specification
 
 **Date:** 2026-03-21
-**Status:** Draft
+**Status:** Draft. Revised 2026-11-15 after the [pre-training review](../../2026-11-15-pre-training-review.md); revisions are marked inline as "Revised 2026-11-15".
 **Goal:** Production-ready, sport-agnostic ball detection and tracking for tennis, badminton, and pickleball
+
+### Revision summary (2026-11-15)
+
+The pre-training review changed these parts of the design. The code has not caught up yet; the review's §4 lists what must change before the first run.
+
+| Section | Change |
+|---|---|
+| §1 | TrackNetV5 now has a self-described official SDK (study-only terms, no weights); independent retrains do not reproduce its numbers |
+| §4, §5 | Our MDD and R-STR differ from the SDK, and MDD does not train from its zero initialisation. V5 is deferred |
+| §6 | Heatmap radius 2.5 px at 512x288, not 30. Loss must be computed in float32 from logits |
+| §7 | First run is V2 on tennis. Training windows slide by 1. Colour jitter is sampled once per window |
+| §9 | Real datasets do not share one CSV layout; labels must be rescaled to 512x288 |
+| §11, §13 | Tolerance is 4 px at 512x288; metric conventions spelled out |
+| §12 | RacketVision released; dataset table and links refreshed |
 
 ---
 
@@ -24,7 +38,7 @@ Research confirms that multi-frame heatmap-based detection (TrackNet) fundamenta
 | Approach | Accuracy (ball) | FPS | Temporal? | Verdict |
 |----------|----------------|-----|-----------|---------|
 | TrackNetV3 | 97.5% | ~30 | Yes (3 frames) | Best for ball |
-| TrackNetV5 | 98.6% (paper) | ~38 | Yes (MDD+R-STR) | SOTA, no public code |
+| TrackNetV5 | 98.6% (paper, own 7:3 split, no test set) | ~38 | Yes (MDD+R-STR) | Unconfirmed. Revised 2026-11-15: study-only SDK, no weights; independent retrains reached F1 .915 and .773 |
 | YOLOv11 | ~53-96% (varies) | 290 | No | Too inaccurate for ball |
 | YO-CSA-T (YOLO+attention) | 90.4% mAP@0.75 | 130 | Partial | Better, still below TrackNet |
 | RT-DETR | 53.1% AP (COCO) | 108 | No | No sports benchmarks |
@@ -155,6 +169,8 @@ X_in = concat(I_{t-1}, A_prev, I_t, A_next, I_{t+1})  # (13, H, W)
 - `alpha`, `beta`: 2 learnable scalars (initialized to 0), trained end-to-end
 - No additional conv layers — this is a lightweight preprocessing module
 
+**Revised 2026-11-15:** zero initialisation does not train. With `alpha = 0` the gradient on `alpha` is exactly zero and the attention collapses to four discrete values, while the gradient on `beta` is enormous (verified locally). The authors' SDK initialises a = 0.2 and b = 0.15, uses epsilon 1e-6, and differences BT.601 luminance, not per-channel RGB. Fix before any V5 training; see the [review](../../2026-11-15-pre-training-review.md) §3.2 and §4.3.
+
 ---
 
 ## 5. R-STR Head (V5 — Phase 2)
@@ -189,6 +205,8 @@ Residual-Driven Spatio-Temporal Refinement sits after the decoder. Instead of re
 3. **Transformer encoder:** 2 layers of factorized attention — each layer applies temporal self-attention across frames first, then spatial self-attention within each frame (TimeSformer-style)
 4. **Output:** Linear projection -> reshape to patch grid -> PixelShuffle(4) -> full-resolution residual map `delta`
 
+**Revised 2026-11-15:** the authors' SDK differs from this table. It uses joint attention over all 1,728 tokens (not factorised), 4 layers, width 256, 2 heads, feed-forward 1024, and a parameter-free gating fusion; its head is about 3.4M parameters against our 0.54M. Its upscale is PixelShuffle(16), equal to the patch size, so the "PixelShuffle(4)" entries above are a misreading and our Linear-plus-unpatchify is already equivalent. Full comparison in the [review](../../2026-11-15-pre-training-review.md) §3.2.
+
 **Note:** These hyperparameters are initial estimates based on the V5 paper's constraint of only 3.7% FLOP increase over V4. The patch count (1728 tokens) is feasible for self-attention on 8GB VRAM. Exact values may need tuning during implementation.
 
 ### Why residual learning
@@ -213,6 +231,8 @@ Where:
 
 This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet WBCE formulation from the V5 paper. It addresses the extreme class imbalance: the ball occupies ~0.01% of pixels. The dynamic weights automatically focus training on hard-to-classify pixels near the ball boundary.
 
+**Revised 2026-11-15 — numerical stability:** computing this from post-sigmoid probabilities inside bf16 autocast returns NaN once predictions are confident, because `1 - 1e-7` rounds to 1.0 in bf16 (reproduced on CPU and CUDA). The model must return logits during training and the loss must be computed in float32 via `logsigmoid`.
+
 **Note on mixup compatibility:** When mixup augmentation blends two samples, `y_i` becomes continuous (e.g., 0.7 instead of 1.0). The formula handles this naturally since it is defined for continuous `y_i` in [0,1].
 
 ### Ground Truth Generation
@@ -220,6 +240,8 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 - Binary heatmap with a filled circle of radius `r` centered on the annotated ball position
 - `r = 30` pixels for standard resolution (512x288 from 1280x720 native)
 - `r = 40` pixels for higher resolution sources (512x288 from 1920x1080 native)
+- **Revised 2026-11-15: use `r = 2.5` pixels at 512x288.** The values above come from the arXiv TrackNetV5 paper, which has no code or ablation for them. TrackNetV3, V4, WASB and BlurBall all use 2.5 at 512x288; RacketVision uses a Gaussian with sigma 3.5. A 30 px disc is a 60 px-wide blob that must be localised to within 4 px.
+- Label coordinates are in the source video's resolution and must be rescaled to 512x288 before the target is drawn.
 - Visibility classes: 0 = not visible (all-zero heatmap), 1 = visible, 2 = partially occluded (still labeled)
 
 ---
@@ -233,7 +255,7 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 | Optimizer | AdamW |
 | Learning rate | 1e-4 |
 | LR schedule | Multi-step decay (gamma=0.1) at epochs 20, 25 |
-| Batch size | 2 (constrained by 8GB VRAM on RTX 3070) |
+| Batch size | 2 (constrained by 8GB VRAM on RTX 3070). Revised 2026-11-15: with GroupNorm this only affects gradient noise; TrackNetV3 and WASB use batch 8–10 with Adam at 1e-3, worth trying if VRAM allows |
 | Epochs | 30 |
 | Input resolution | 512x288 |
 | Frames per sample | 3 consecutive |
@@ -243,7 +265,7 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 
 1. **Mixup** (proven in V2/V3): Blend two training samples with random alpha
 2. **Horizontal flip** with label coordinate adjustment
-3. **Color jitter**: Brightness, contrast, saturation variation
+3. **Color jitter**: Brightness, contrast, saturation variation. Revised 2026-11-15: sample the jitter parameters once per 3-frame window; independent per-frame jitter corrupts the motion cue between frames
 4. **Motion blur simulation**: Directional Gaussian blur on ball patches
 5. **Copy-paste augmentation**: Paste ball patches onto different frames (effective for small objects)
 
@@ -252,7 +274,9 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 1. **Train V2 baseline** on TrackNet tennis dataset (~20K frames) + CoachAI badminton dataset (~78K frames)
 2. **Fine-tune** per sport with sport-specific datasets
 3. **For pickleball**: Transfer from tennis/badminton weights, fine-tune on ~12K available frames
-4. **RacketVision (435K frames, 3 sports)**: Monitor for dataset release — as of March 2026, the GitHub repo appears to be a placeholder with no confirmed download links. If/when available, use for unified pre-training.
+4. **RacketVision (435K frames, 3 sports)**: Revised 2026-11-15: released 2026-04-11. Only 64,042 frames carry ball labels (every 5th frame), so using it for pre-training needs a per-frame loss mask, and commercial rights to its footage are unresolved. See [data-sources.md](../../data-sources.md).
+
+**Revised 2026-11-15 — first run:** V2 on tennis only, after the fixes in the [review](../../2026-11-15-pre-training-review.md) §4. The first experiment after a baseline is a median background frame concatenated to the input (12 channels), the best-supported addition in the recent literature. V5 is deferred.
 
 ### PyTorch Training Optimizations
 
@@ -322,6 +346,8 @@ Frame,Visibility,X,Y
 
 This matches the TrackNet convention used by all existing datasets.
 
+**Revised 2026-11-15:** that last sentence is wrong. This is our internal target format; real datasets need conversion. The tennis set's `Label.csv` reportedly uses `file name, visibility, x-coordinate, y-coordinate` with NaNs; the pickleball labels use `Frame,Ball,x,y` with normalised coordinates; RacketVision matches our columns but at 1920x1080 and with labels on every 5th frame only. See [data-sources.md](../../data-sources.md).
+
 ### PyTorch Dataset Class
 
 ```python
@@ -346,6 +372,7 @@ class TrackNetDataset(Dataset):
 ### Sliding Window Strategy
 
 - **Stride = 3** (MIMO): Process frames [0,1,2], then [3,4,5], etc. Each sample produces 3 heatmaps. No overlap, no duplicate predictions per frame. This matches the original TrackNet MIMO design.
+- **Revised 2026-11-15:** stride 3 is for inference only. Training windows slide by 1, as in the TrackNetV3, V4, WASB and RacketVision code: three times as many distinct windows, and each frame is seen in every slot.
 - At video boundaries: pad by duplicating the first/last frame (e.g., frame 0 uses [0,0,1], last frame uses [N-2,N-1,N-1])
 
 ### Video Loading Strategy
@@ -475,7 +502,7 @@ Video file / Camera feed
 |--------|--------|
 | FPS (RTX 3070) | >30 (real-time at 30fps input) |
 | FPS (RTX 4090) | >100 (3-frame batch processing) |
-| Detection threshold | Euclidean distance <= 4px at original resolution |
+| Detection threshold | Euclidean distance <= 4px at 512x288 (revised 2026-11-15; was "original resolution", which contradicted the config. 4 px at 512x288 matches TrackNetV3, V4 and RacketVision; WASB and the arXiv TrackNetV5 paper measure at original resolution) |
 | Target F1 (tennis) | >0.97 |
 | Target F1 (badminton) | >0.97 |
 | Target F1 (pickleball) | >0.90 (limited data) |
@@ -488,32 +515,30 @@ Video file / Camera feed
 
 | Sport | Dataset | Frames | Quality | Availability | Format |
 |-------|---------|--------|---------|-------------|--------|
-| Tennis | TrackNet V1 | 19,835 | High | Confirmed (Google Drive mirror) | CSV (center-point) |
-| Tennis | TrackNet V2 | 20,844 | High | Degraded (original NCTU link may be broken; use NYCU GitLab or Google Drive mirror) | CSV (center-point) |
-| Tennis | Roboflow (Hard Court) | 9,836 | Medium | Available | YOLO/COCO bbox |
-| Badminton | CoachAI / TrackNet | 78,200 | High | Likely available (SharePoint link actively referenced in docs) | CSV (center-point) |
-| Multi-sport | RacketVision | 435,179 | High | **NOT CONFIRMED** — GitHub repo likely placeholder, no download links verified | Center-point + racket pose |
-| Multi-sport | WASB-SBDT | varies | High | Available (GitHub) | Multiple formats |
-| Pickleball | TrackNet-Pickleball | ~12,000 | Low (single match) | Available (GitHub) | CSV (center-point) |
-| Table Tennis | OpenTTGames | ~50K+ | High | Available (CC BY-NC-SA 4.0) | Center-point + segmentation |
+Revised 2026-11-15. [data-sources.md](../../data-sources.md) is the maintained list, with links, licences and a verification log.
 
-### Download Links (verified March 2026)
+| Sport | Dataset | Labelled frames | Quality | Availability | Format |
+|-------|---------|--------|---------|-------------|--------|
+| Tennis | TrackNet tennis | ~20K | High | Available (NYCU SharePoint, Kaggle) | `Label.csv` per clip, needs conversion |
+| Badminton | CoachAI / TrackNetV2 | 78,200 | High | Available (NYCU SharePoint) | CSV (center-point) |
+| Multi-sport | RacketVision | 64,042 of 435,179 frames | High, sparse | Released 2026-04-11 (Hugging Face); footage rights unresolved | CSV (center-point) at 1080p + racket pose |
+| Table tennis | BlurBall | ~64K | High | Repo live; download host unreachable on 2026-11-15 | CSV (center-point) + blur attributes |
+| Badminton | ETH one-shot shuttle detection | 20,510 | Medium (no negatives) | Available (Google Drive) | YOLO bbox |
+| Pickleball | TrackNet-Pickleball | 12,810 | Low (single match, no raw video) | Labels and preprocessed arrays only | CSV, normalised coordinates |
+| Table tennis | OpenTTGames | Event windows only | High | Available (CC BY-NC-SA 4.0, non-commercial) | Center-point + segmentation |
+| Tennis | Roboflow (Hard Court) | 9,836 | Medium | Not re-verified | YOLO/COCO bbox |
 
-- **TrackNet Tennis (Google Drive mirror):** https://drive.google.com/drive/folders/11r0RUaQHX7I3ANkaYG4jOxXK1OYo01Ut
-- **TrackNet V2 (NYCU GitLab):** https://gitlab.nol.cs.nycu.edu.tw/open-source/TrackNetv2
-- **CoachAI Badminton:** https://nycu1-my.sharepoint.com/:u:/g/personal/tik_m365_nycu_edu_tw/EWisYhAiai9Ju7L-tQp0ykEBZJd9VQkKqsFrjcqqYIDP-g
-- **CoachAI Project (GitHub):** https://github.com/wywyWang/CoachAI-Projects
-- **TrackNet-Pickleball:** https://github.com/AndrewDettor/TrackNet-Pickleball
-- **WASB-SBDT:** https://github.com/nttcom/WASB-SBDT
-- **RacketVision:** https://github.com/OrcustD/RacketVision (MONITOR — likely not yet released)
+WASB-SBDT hosts no data of its own; it links to the tennis and badminton sets above.
 
 ### Strategy
 
-1. **Phase 1 (immediate):** Train V2 baseline on TrackNet tennis (~20K frames) + CoachAI badminton (~78K frames). Validate architecture works.
-2. **Phase 2 (pickleball):** Transfer learn from tennis/badminton weights onto ~12K pickleball frames. Evaluate performance gap.
-3. **Phase 3 (data collection):** Record and label additional pickleball matches using CVAT. Target 50K+ frames.
-4. **Phase 4 (if RacketVision releases):** Use 435K-frame multi-sport dataset for unified pre-training. Re-fine-tune per sport.
-5. **Labeling estimate:** With CVAT point interpolation, ~2-3 seconds per frame average = ~40-80 hours for 50K frames.
+Revised 2026-11-15.
+
+1. **Phase 1 (immediate):** Train a V2 baseline on TrackNet tennis only. Validate that the pipeline trains and that our metrics are comparable with published ones.
+2. **Phase 2 (multi-sport):** Add CoachAI badminton, then joint pre-training with RacketVision and BlurBall once the loss mask and licence questions are settled. RacketVision's paper reports joint multi-sport training beats single-sport.
+3. **Phase 3 (pickleball data collection):** Record and label our own pickleball matches using CVAT. Target 50K+ frames. The public set cannot carry this: one match, no raw video.
+4. **Phase 4 (pickleball):** Fine-tune from the multi-sport weights. Split by contiguous rallies, never by window, and hold out a second match as the real test set.
+5. **Labeling estimate:** With CVAT point interpolation, ~2-3 seconds per frame average = ~40-80 hours for 50K frames. Label the centre of the blur streak, not its leading edge (BlurBall reports +0.4 to +1.5 F1 across models).
 
 ### Annotation Pipeline
 
@@ -546,6 +571,8 @@ Video file / Camera feed
 - **F1:** 2 * Precision * Recall / (Precision + Recall)
 - **Accuracy:** (TP + TN) / total frames (including correctly predicted "no ball" frames)
 
+**Revised 2026-11-15 — conventions.** Distances are measured at 512x288. The ground-truth position is the centroid of the target heatmap (as in TrackNetV3's evaluation code), and the prediction is the centroid of the largest connected blob. Published codebases disagree on a detection that is too far from a visible ball: TrackNetV3, V4 and WASB count it as a false positive only, while RacketVision also counts it against recall. Report both so our numbers can be compared with either group.
+
 ### Tracking Metrics (trajectory-level)
 
 - **Tracking accuracy:** Percentage of frames where ball is correctly located
@@ -576,11 +603,12 @@ Video file / Camera feed
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Pickleball data insufficient | High | High | Transfer learning + active data collection via CVAT |
-| RacketVision dataset unavailable | High | Medium | Not a blocker — train on sport-specific datasets instead. Monitor for release. |
-| TrackNet dataset download links broken | Medium | Medium | Multiple mirrors exist (Google Drive, NYCU GitLab). Verify before depending on them. |
+| RacketVision dataset unavailable | Resolved | — | Released 2026-04-11. New risks: sparse labels (20% of frames) and unresolved footage rights for commercial use. |
+| Dataset licences unclear for commercial use | High | High | Most sets state no data licence. Confirm with authors before any enter a shipped model; see data-sources.md. |
+| TrackNet dataset download links broken | Low | Medium | Verified live 2026-11-15: NYCU SharePoint (official) and Kaggle. |
 | V5 R-STR too heavy for 8GB GPU | Medium | Low | Gradient checkpointing + bf16. Train on AWS if needed. |
 | Cross-camera generalization poor | High | Medium | Train on diverse camera angles; augment aggressively |
-| V5 paper details insufficient for implementation | Low | Medium | V4 motion attention as fallback; TSATTHead hyperparameters estimated in spec |
+| V5 paper details insufficient for implementation | Realised | Medium | Our MDD and R-STR differ from the authors' SDK, and the paper's results are unreproduced. V5 deferred; V2 plus a background frame is the first-run path. |
 | BatchNorm instability at batch size 2 | N/A | N/A | Mitigated: using GroupNorm instead |
 | Real-time performance on edge devices | Medium | Low | Not in scope for Phase 1; ONNX/TensorRT for future |
 
