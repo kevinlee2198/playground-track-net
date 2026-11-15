@@ -59,6 +59,20 @@ class PerfectModel(nn.Module):
         return out
 
 
+class CentreBallModel(SimpleModel):
+    """Trains like SimpleModel, but its probabilities always mark one pixel at
+    the frame centre, where _make_synthetic_dataset puts the ball, so
+    validation f1 is 1.0 regardless of the random seed."""
+
+    def forward(self, x, return_logits=False):
+        if return_logits:
+            return super().forward(x, return_logits=True)
+        b, _, h, w = x.shape
+        probs = torch.zeros(b, 3, h, w, device=x.device)
+        probs[..., h // 2, w // 2] = 1.0
+        return probs
+
+
 def _make_synthetic_heatmap(x, y, h=288, w=512, radius=5):
     """Create a synthetic heatmap with a ball at (x, y)."""
     heatmap = torch.zeros(h, w)
@@ -295,6 +309,25 @@ def test_float16_amp_is_rejected():
         ds = _make_synthetic_dataset()
         with pytest.raises(ValueError, match="float16"):
             Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+
+
+def test_latest_checkpoint_records_best_f1_of_its_epoch():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=1, experiment_name="test_latest")
+        trainer = Trainer(
+            model=CentreBallModel(),
+            loss_fn=SimpleLoss(),
+            train_dataset=_make_synthetic_dataset(num_samples=4, h=32, w=64),
+            val_dataset=_make_synthetic_dataset(num_samples=2, h=32, w=64),
+            config=config,
+        )
+        trainer.train()
+        latest = torch.load(
+            os.path.join(tmpdir, "checkpoints", "test_latest", "latest.pt"),
+            weights_only=True,
+        )
+        assert trainer.best_f1 == 1.0
+        assert latest["best_f1"] == trainer.best_f1
 
 
 def test_checkpoint_save_load_roundtrip():

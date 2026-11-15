@@ -225,12 +225,12 @@ class Trainer:
                 val_metrics["recall"],
             )
 
-            # Save latest checkpoint
-            self._save_checkpoint("latest.pt")
-
-            # Save best checkpoint
+            # Save best checkpoint first, so latest.pt records the updated best_f1
             if val_metrics["f1"] > self.best_f1:
                 self.best_f1 = val_metrics["f1"]
                 self._save_checkpoint("best.pt")
+
+            # Save latest checkpoint
+            self._save_checkpoint("latest.pt")
 
         self.writer.close()
