@@ -13,8 +13,20 @@ from training.run import load_config, run_evaluation, run_training
 CONFIG = Path(__file__).parents[1] / "configs" / "default.yaml"
 
 
-def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
+def _config_for(tennis_root, **data_overrides):
+    """The default config pointed at the miniature dataset."""
     config = load_config(CONFIG)
+    config["data"] = {
+        "format": "tennis",
+        "root": str(tennis_root),
+        "val_groups": ["game2"],
+        "test_groups": ["game3"],
+    } | data_overrides
+    return config
+
+
+def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
+    config = _config_for(tennis_root)
     config |= {
         "input_size": [128, 72],  # small for speed; the U-Net is fully convolutional
         "epochs": 1,
@@ -28,12 +40,6 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
         "checkpoint_dir": str(tmp_path / "checkpoints"),
         "log_dir": str(tmp_path / "runs"),
         "experiment_name": "e2e",
-        "data": {
-            "format": "tennis",
-            "root": str(tennis_root),
-            "val_groups": ["game2"],
-            "test_groups": ["game3"],
-        },
     }
     run_training(config)
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
@@ -61,18 +67,6 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
-
-
-def _config_for(tennis_root, **data_overrides):
-    """The default config pointed at the miniature dataset; nothing is trained."""
-    config = load_config(CONFIG)
-    config["data"] = {
-        "format": "tennis",
-        "root": str(tennis_root),
-        "val_groups": ["game2"],
-        "test_groups": ["game3"],
-    } | data_overrides
-    return config
 
 
 def test_unknown_data_format_raises(tennis_root):
