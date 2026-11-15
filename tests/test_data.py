@@ -67,6 +67,17 @@ class TestGenerateHeatmap:
         unique_vals = torch.unique(heatmap)
         assert all(v in (0.0, 1.0) for v in unique_vals)
 
+    def test_default_radius_is_2_5(self):
+        assert generate_heatmap(x=256, y=144, visibility=1).sum() == 21
+
+    def test_float_centre_at_edge_is_clipped(self):
+        hm = generate_heatmap(x=511.84, y=0.2, visibility=1)
+        assert hm[0, 511] == 1.0
+        assert hm[:, :500].sum() == 0
+
+    def test_label_outside_frame_gives_empty_target(self):
+        assert generate_heatmap(x=-50.0, y=10.0, visibility=1).sum() == 0
+
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -113,6 +124,7 @@ class TestLoadLabels:
         assert visible == [True, True, True, False, False, True]
         assert (labels[0].x, labels[0].y) == (640.0, 360.0)
         assert (labels[3].x, labels[3].y) == (0.0, 0.0)
+        assert (labels[4].x, labels[4].y) == (0.0, 0.0)
 
     def test_internal_layout(self, sample_frames_dir):
         _, csv_path = sample_frames_dir
@@ -186,6 +198,60 @@ class TestTrackNetDataset:
             assert frames.shape == (9, 288, 512)
             assert heatmaps.shape == (3, 288, 512)
 
+    def test_labels_rescaled_from_source_resolution(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        ds = TrackNetDataset(clip, clip / "Label.csv")
+        assert ds.source_size == (1280, 720)
+        _, heatmaps = ds[0]
+        ys, xs = torch.where(heatmaps[0] > 0)
+        assert abs(xs.float().mean().item() - 256.0) <= 0.5  # 640 * 512 / 1280
+        assert abs(ys.float().mean().item() - 144.0) <= 0.5  # 360 * 288 / 720
+        assert heatmaps[0].sum() == 21
+
+    def test_occluded_and_invisible_frames_have_empty_targets(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        _, heatmaps = TrackNetDataset(clip, clip / "Label.csv")[1]  # frames 3, 4, 5
+        assert (
+            heatmaps[0].sum() == 0
+            and heatmaps[1].sum() == 0
+            and heatmaps[2].sum() == 21
+        )
+
+    def test_stride_1_window_count_and_overlap(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        ds = TrackNetDataset(clip, clip / "Label.csv", stride=1)
+        assert len(ds) == 4
+        assert torch.equal(ds[1][0][:3], ds[0][0][3:6])
+        assert not torch.equal(ds[1][0][:3], ds[0][0][:3])
+
+    @pytest.mark.parametrize("stride", [1, 3])
+    def test_short_clip_gives_one_padded_window(self, tmp_path, stride):
+        _write_sample_dataset(
+            tmp_path / "frames",
+            tmp_path / "labels.csv",
+            labels=[(0, 1, 100, 80), (1, 1, 300, 200)],
+        )
+        ds = TrackNetDataset(
+            tmp_path / "frames", tmp_path / "labels.csv", stride=stride
+        )
+        assert len(ds) == 1
+        frames, heatmaps = ds[0]
+        assert frames.shape == (9, 288, 512)
+        assert not torch.equal(frames[:3], frames[3:6])
+        assert torch.equal(frames[3:6], frames[6:9])
+        assert torch.equal(heatmaps[1], heatmaps[2])
+
+    def test_invalid_stride_raises(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        with pytest.raises(ValueError, match="stride"):
+            TrackNetDataset(clip, clip / "Label.csv", stride=2)
+
+    def test_frame_label_mismatch_raises(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        (clip / "0005.jpg").unlink()
+        with pytest.raises(ValueError, match="Clip1"):
+            TrackNetDataset(clip, clip / "Label.csv")
+
 
 class TestDatasetBoundaryPadding:
     def test_single_frame_dataset(self, tmp_path):
@@ -203,7 +269,7 @@ class TestDatasetBoundaryPadding:
         assert torch.equal(frames[:3], frames[3:6])
         assert torch.equal(frames[:3], frames[6:9])
 
-    def test_four_frames_produces_two_samples(self, tmp_path):
+    def test_four_frames_gives_one_window_without_tail_padding(self, tmp_path):
         labels = [(i, 1, 100 + i * 10, 80 + i * 5) for i in range(4)]
         _write_sample_dataset(
             tmp_path / "frames",
@@ -213,10 +279,10 @@ class TestDatasetBoundaryPadding:
         ds = TrackNetDataset(
             frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv"
         )
-        assert len(ds) == 2
-        frames, heatmaps = ds[1]
+        assert len(ds) == 1
+        frames, _ = ds[0]
         assert frames.shape == (9, 288, 512)
-        assert torch.equal(frames[3:6], frames[6:9])
+        assert not torch.equal(frames[3:6], frames[6:9])
 
 
 # ---------------------------------------------------------------------------
