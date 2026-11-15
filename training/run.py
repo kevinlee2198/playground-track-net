@@ -76,7 +76,24 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
 
     ``config`` must hold only plain YAML types: the trainer stores it in every
     checkpoint. With ``resume``, training continues from that checkpoint.
+
+    Raises:
+        FileExistsError: If ``resume`` is not given but this experiment already
+            has a ``latest.pt``, which a fresh run would overwrite. Checked
+            before anything is built or written.
     """
+    if resume is None:
+        latest = (
+            Path(config["checkpoint_dir"])
+            / config.get("experiment_name", "default")
+            / "latest.pt"
+        )
+        if latest.exists():
+            raise FileExistsError(
+                f"{latest} already exists and a fresh run would overwrite it: "
+                f"pass --resume {latest} to continue that run, or set a different "
+                "experiment_name to start a new one"
+            )
     datasets = _build_datasets(config, ("train", "val"))
     # The model is initialised before the Trainer seeds, so seed it here too.
     torch.manual_seed(config["seed"])
