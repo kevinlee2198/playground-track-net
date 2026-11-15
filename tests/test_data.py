@@ -340,6 +340,14 @@ class TestFrameColorJitter:
         assert out_frames.min() >= 0.0
         assert out_frames.max() <= 1.0
 
+    def test_same_jitter_applied_to_all_three_frames(self):
+        torch.manual_seed(0)
+        frame = torch.rand(3, 32, 64)
+        out, _ = FrameColorJitter()(frame.repeat(3, 1, 1), torch.zeros(3, 32, 64))
+        a, b, c = out.chunk(3, dim=0)
+        assert torch.allclose(a, b) and torch.allclose(b, c)
+        assert not torch.allclose(a, frame)
+
 
 class TestMixup:
     def test_mixup_blends_frames_and_heatmaps(self):
