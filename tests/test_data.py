@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from data.dataset import TrackNetDataset
 from data.heatmap import generate_heatmap
 from data.labels import load_labels
+from data.sources import build_dataset, discover_tennis_clips, split_clips
 from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
 
 
@@ -398,6 +399,74 @@ class TestCompose:
         f_out, h_out = compose(frames, heatmaps)
         assert torch.allclose(f_out, frames)
         assert torch.allclose(h_out, heatmaps)
+
+
+# ---------------------------------------------------------------------------
+# Sources: clip discovery, splits, multi-clip datasets
+# ---------------------------------------------------------------------------
+
+
+class TestSources:
+    def test_discover_tennis_clips(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        assert [(c.group, c.frames_dir.name) for c in clips] == [
+            ("game1", "Clip1"),
+            ("game1", "Clip2"),
+            ("game2", "Clip1"),
+            ("game3", "Clip1"),
+        ]
+        assert all(c.label_path.name == "Label.csv" for c in clips)
+
+    def test_natural_order(self, tmp_path):
+        for game, clip in [
+            ("game2", "Clip1"),
+            ("game10", "Clip1"),
+            ("game1", "Clip10"),
+            ("game1", "Clip2"),
+        ]:
+            clip_dir = tmp_path / game / clip
+            clip_dir.mkdir(parents=True)
+            (clip_dir / "Label.csv").touch()
+        clips = discover_tennis_clips(tmp_path)
+        assert [(c.group, c.frames_dir.name) for c in clips] == [
+            ("game1", "Clip2"),
+            ("game1", "Clip10"),
+            ("game2", "Clip1"),
+            ("game10", "Clip1"),
+        ]
+
+    def test_split_by_group_never_shares_a_game(self, tennis_root):
+        s = split_clips(
+            discover_tennis_clips(tennis_root),
+            val_groups=["game2"],
+            test_groups=["game3"],
+        )
+        assert [len(s[k]) for k in ("train", "val", "test")] == [2, 1, 1]
+        assert {c.group for c in s["train"]} == {"game1"}
+
+    def test_build_dataset_lengths(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        assert len(build_dataset(clips, stride=1, radius=2.5)) == 16  # 4 clips x 4
+        assert len(build_dataset(clips, stride=3, radius=2.5)) == 8  # 4 clips x 2
+
+    def test_unknown_group_raises(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        with pytest.raises(ValueError, match="game9"):
+            split_clips(clips, val_groups=["game9"], test_groups=[])
+
+    def test_overlapping_groups_raises(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        with pytest.raises(ValueError, match="game2"):
+            split_clips(clips, val_groups=["game2"], test_groups=["game2"])
+
+    def test_empty_train_raises(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        with pytest.raises(ValueError, match="train"):
+            split_clips(clips, val_groups=["game1", "game2"], test_groups=["game3"])
+
+    def test_missing_root_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            discover_tennis_clips(tmp_path / "does-not-exist")
 
 
 # ---------------------------------------------------------------------------
