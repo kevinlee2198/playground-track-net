@@ -99,34 +99,25 @@ class TestLoadLabels:
             writer.writerows(rows)
         return path
 
+    @staticmethod
+    def _assert_load_fails(path: Path, match: str) -> None:
+        """load_labels raises a ValueError matching ``match`` that names the file."""
+        with pytest.raises(ValueError, match=match) as exc_info:
+            load_labels(path)
+        assert str(path) in str(exc_info.value)
+
     def test_tennis_layout(self, tennis_root):
         labels = load_labels(tennis_root / "game1" / "Clip1" / "Label.csv")
+        visible = [label.visible for label in labels]
         assert [label.frame for label in labels] == [0, 1, 2, 3, 4, 5]
-        assert [label.visible for label in labels] == [
-            True,
-            True,
-            True,
-            False,
-            False,
-            True,
-        ]
+        assert visible == [True, True, True, False, False, True]
         assert (labels[0].x, labels[0].y) == (640.0, 360.0)
         assert (labels[3].x, labels[3].y) == (0.0, 0.0)
 
     def test_internal_layout(self, sample_frames_dir):
         _, csv_path = sample_frames_dir
-        labels = load_labels(csv_path)
-        assert [label.visible for label in labels] == [
-            True,
-            True,
-            True,
-            False,
-            True,
-            True,
-            True,
-            True,
-            True,
-        ]
+        visible = [label.visible for label in load_labels(csv_path)]
+        assert visible == [True, True, True, False, True, True, True, True, True]
 
     def test_visible_row_without_coordinates_raises(self, tmp_path):
         path = self._write_csv(
@@ -134,9 +125,7 @@ class TestLoadLabels:
             ["file name", "visibility", "x-coordinate", "y-coordinate", "status"],
             [("0000.jpg", 1, 640, 360, 0), ("0001.jpg", 1, "", "", "")],
         )
-        with pytest.raises(ValueError, match="coordinates") as exc_info:
-            load_labels(path)
-        assert str(path) in str(exc_info.value)
+        self._assert_load_fails(path, match="coordinates")
 
     def test_duplicate_frame_raises(self, tmp_path):
         path = self._write_csv(
@@ -144,9 +133,7 @@ class TestLoadLabels:
             ["Frame", "Visibility", "X", "Y"],
             [(0, 1, 100, 80), (1, 1, 110, 85), (1, 1, 120, 90)],
         )
-        with pytest.raises(ValueError, match="duplicate") as exc_info:
-            load_labels(path)
-        assert str(path) in str(exc_info.value)
+        self._assert_load_fails(path, match="duplicate")
 
     def test_unknown_header_raises(self, tmp_path):
         path = self._write_csv(
@@ -154,9 +141,7 @@ class TestLoadLabels:
             ["frame_id", "vis", "cx", "cy"],
             [(0, 1, 100, 80)],
         )
-        with pytest.raises(ValueError, match="header") as exc_info:
-            load_labels(path)
-        assert str(path) in str(exc_info.value)
+        self._assert_load_fails(path, match="header")
 
 
 class TestTrackNetDataset:
