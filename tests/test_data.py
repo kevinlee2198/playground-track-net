@@ -527,6 +527,44 @@ class TestDatasetBackground:
         assert all(d.background is not None for d in clips_ds)
         assert dataset[0][0].shape == (12, 288, 512)
 
+    @staticmethod
+    def _write_static_clip(tmp_path: Path, num_frames: int) -> tuple[Path, Path]:
+        """A clip whose frames are all one random image, which is therefore
+        its background, and is not left-right symmetric."""
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        img = np.random.default_rng(0).integers(0, 256, (288, 512, 3), dtype=np.uint8)
+        assert not np.array_equal(img, img[:, ::-1])
+        for i in range(num_frames):
+            cv2.imwrite(str(frames_dir / f"{i:04d}.png"), img)
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            writer.writerows((i, 1, 100, 80) for i in range(num_frames))
+        return frames_dir, csv_path
+
+    def test_colour_jitter_applies_to_the_background_too(self, tmp_path):
+        frames_dir, csv_path = self._write_static_clip(tmp_path, 6)
+        plain = TrackNetDataset(frames_dir, csv_path, background=True)
+        jittered = TrackNetDataset(
+            frames_dir, csv_path, background=True, transform=FrameColorJitter()
+        )
+        torch.manual_seed(0)
+        frames, _ = jittered[0]
+        assert not torch.allclose(frames, plain[0][0])  # the draw is not the identity
+        for k in range(3):
+            assert torch.allclose(frames[9:], frames[3 * k : 3 * k + 3], atol=1e-6), k
+
+    def test_flip_applies_to_the_background_too(self, tmp_path):
+        frames_dir, csv_path = self._write_static_clip(tmp_path, 6)
+        plain = TrackNetDataset(frames_dir, csv_path, background=True)
+        flipped = TrackNetDataset(
+            frames_dir, csv_path, background=True, transform=HorizontalFlip(p=1.0)
+        )
+        background = plain[0][0][9:]
+        assert torch.equal(flipped[0][0][9:], background.flip(-1))
+
 
 # ---------------------------------------------------------------------------
 # Transforms

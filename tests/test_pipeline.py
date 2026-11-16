@@ -20,11 +20,14 @@ from data import (
     FrameColorJitter,
     HorizontalFlip,
     TrackNetDataset,
+    background_indices,
     build_dataset,
     discover_tennis_clips,
     generate_heatmap,
+    median_frame,
     source_to_model,
 )
+from inference.video_preprocess import extract_frames
 from main import build_parser, run_inference
 from models import TrackNet, build_model
 from training.run import (
@@ -103,6 +106,60 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
+
+
+class _RecordingModel(nn.Module):
+    """Records every input it is given and finds no ball."""
+
+    def __init__(self):
+        super().__init__()
+        self.inputs: list[torch.Tensor] = []
+
+    def forward(self, x):
+        self.inputs.append(x.cpu())
+        b, _, h, w = x.shape
+        return torch.zeros(b, 3, h, w, device=x.device)
+
+
+def test_inference_appends_the_videos_median_background(tmp_path, monkeypatch):
+    # A fixed scene with a bright square that moves every frame: its median is
+    # the scene, which zeros, the first frame or the mean would not match.
+    rng = np.random.default_rng(0)
+    scene = rng.integers(0, 200, (72, 128, 3), dtype=np.uint8)
+    video = tmp_path / "frames"
+    video.mkdir()
+    for i in range(7):
+        img = scene.copy()
+        img[20:28, 8 + 16 * i : 16 + 16 * i] = 255
+        cv2.imwrite(str(video / f"{i:04d}.png"), img)
+    model = _RecordingModel()
+    # run_inference imports load_model from models when it runs.
+    monkeypatch.setattr(
+        "models.load_model", lambda path, device: (model, {"background_frame": True})
+    )
+    args = build_parser().parse_args(
+        [
+            "infer",
+            "--video",
+            str(video),
+            "--model",
+            str(tmp_path / "unused.pt"),
+            "--output",
+            str(tmp_path / "pred.csv"),
+        ]
+    )
+    run_inference(args)
+
+    frames, _ = extract_frames(str(video))
+    background = median_frame(frames[i] for i in background_indices(len(frames)))
+    assert not np.allclose(background, frames[0])
+    assert not np.allclose(background, np.mean(frames, axis=0))
+    assert len(model.inputs) == 3  # frames 0-2, 3-5 and 6 padded with itself
+    for k, x in enumerate(model.inputs):
+        assert x.shape == (1, 12, 288, 512)
+        window = [frames[min(3 * k + j, len(frames) - 1)] for j in range(3)]
+        assert torch.equal(x[0, :9], torch.from_numpy(np.concatenate(window))), k
+        assert torch.equal(x[0, 9:], torch.from_numpy(background)), k
 
 
 def _background_warnings(caplog) -> list[str]:
@@ -203,6 +260,24 @@ def test_resume_into_existing_run_is_allowed(tennis_root, tmp_path, caplog):
     assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
     # Only epochs and max_steps changed, and those are meant to change on resume.
     assert _config_change_warnings(caplog) == []
+
+
+def test_resume_of_background_run(tennis_root, tmp_path):
+    run_training(
+        _fast_training_config(
+            tennis_root, tmp_path, epochs=1, max_steps=2, background_frame=True
+        )
+    )
+    latest = tmp_path / "checkpoints" / "e2e" / "latest.pt"
+
+    config = _fast_training_config(
+        tennis_root, tmp_path, epochs=2, max_steps=4, background_frame=True
+    )
+    run_training(config, resume=latest)
+    checkpoint = torch.load(latest, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+    first_conv = checkpoint["model_state_dict"]["backbone.down1.conv1.conv.weight"]
+    assert first_conv.shape[1] == 12
 
 
 def test_resume_with_unchanged_config_does_not_warn(tennis_root, tmp_path, caplog):
