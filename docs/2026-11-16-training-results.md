@@ -102,14 +102,14 @@ The same numbers as horizontal position relative to the ball, at 512x288, taking
 
 Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) is planned. It differs from `tennis_v2_noflip` by one key, `background_frame: true`, so the comparison is with that run's final numbers.
 
-**The input.** For each clip, the per-pixel median of up to 50 evenly spaced frames, at model resolution, is appended to every window as a fourth RGB image (12 input channels). A moving ball is in few of those frames at any one place, so the median leaves it out. Players who stand still through a short clip partly remain in it.
+**The input.** For each clip, the per-pixel median of up to 50 evenly spaced frames, at model resolution, is appended to every window as a fourth RGB image (12 input channels). A moving ball is in few of those frames at any one place, so the median leaves it out. Players who stand still through a short clip partly remain in it: in the background image of game7 Clip8 (55 frames) both players are visible.
 
-**Why it is next.** About half of the baseline's failures in §3 are at rackets and players (45 of 83 wrong detections, 46 of 89 misses), and 8 wrong detections are on court lines. A reference image of the static scene could help the model separate the moving ball from what stays put; that is untested here. It is also the best-supported addition in the literature ([pre-training review](2026-11-15-pre-training-review.md) §3.1).
+**Why it is next.** It is the best-supported addition in the literature ([pre-training review](2026-11-15-pre-training-review.md) §3.1). The failure analysis in §3 does not make a strong case for it on its own. About half of the baseline's failures are at rackets and players (45 of 83 wrong detections, 46 of 89 misses), and those move, so they are missing from the background just as the ball is. Static structures are a small share: 8 wrong detections on court lines. Where a static reference could plausibly help is with balls that are faint or in front of a line or the net (15 of the 89 misses). None of this is tested here.
 
 **A check of the input, before any training.** No model involved; game1–7 only, every 5th frame of each clip, against that clip's median background.
 
-- The camera is static within a clip: the mean absolute difference between a frame and its clip's background is 2.5–4.4 of 255, by game. Differences here are at 512x288, taking the largest of the three colour channels at each pixel.
-- The ball stands out from the background: at a visible ball, the largest difference from the background in the 5x5 patch at the label has a median of 83–119 of 255 by game, and is under 20 in 0–2.7% of frames by game (1.1% on game7).
+- The camera is close to static within a clip: the mean absolute difference between a frame and its clip's background is 2.5–4.4 of 255 by game, and 6.4 in the worst clip (game2 Clip1). Differences here are at 512x288, taking the largest of the three colour channels at each pixel.
+- The ball has not been absorbed into the background: at a visible ball, the largest difference from the background in the 5x5 patch at the label has a median of 83–119 of 255 by game, and is under 20 in 0–2.7% of frames by game (1.1% on game7). A racket or player next to the ball would score high too, so this does not show that the ball can be told apart from them.
 
 The script for this check is not in the repository.
 

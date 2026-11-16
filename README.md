@@ -228,7 +228,7 @@ uv run python main.py infer \
 
 Outputs a CSV with `Frame, X, Y, Confidence, Visibility` columns and (optionally) an annotated MP4 with ball overlays drawn by [utils/visualization.py](utils/visualization.py).
 
-`--model` takes a trainer checkpoint (`latest.pt` or `best.pt`) or a bare state dict for the default V2 `TrackNet()`. A trainer checkpoint is built as it was trained, from the config stored in it; if that config has `background_frame: true`, every window also gets the median of up to 50 evenly spaced frames of the input video as its background. `infer` always works at 512x288. Frames are converted to RGB, as in training.
+`--model` takes a trainer checkpoint (`latest.pt` or `best.pt`) or a bare state dict for the default V2 `TrackNet()`. A trainer checkpoint is built as it was trained, from the config stored in it; if that config has `background_frame: true`, every window also gets the median of up to 50 evenly spaced frames of the input video as its background, so give such a model one static-camera clip: a video with cuts or camera motion has no meaningful median. `infer` always works at 512x288. Frames are converted to RGB, as in training.
 
 ## Dependencies
 

@@ -195,7 +195,7 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 4. **Pickleball data.** Requires our own recordings. If we annotate, label the centre of the blur streak, which BlurBall reports is worth +0.4 to +1.5 F1 across models.
 5. **Batch size and learning rate.** Batch 2 ran at 8.6–8.7 steps per second through the full epoch (8.8–8.9 after warm-up in the 300-step run) and peaks at 1,769 MiB. Batch 8 peaked at 6,656 MiB in training and then ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10 (§3.3).
 6. **Mixup** is implemented (`data/transforms.py`) but not wired into training. TrackNetV3 reports +0.29 F1 from it.
-7. **Median background frame.** Not in the code. It needs a 12-channel input, and `infer` and `evaluate` must first read the architecture from the checkpoint's config (limitation below). *Update, 2026-11-16:* the code exists on branch `feat/background-frame` (`background_frame: true`; `infer` and `evaluate` now build the model from the checkpoint's config), and run `tennis_v2_bg` is planned.
+7. **Median background frame.** Not in the code. It needs a 12-channel input, and `infer` and `evaluate` must first read the architecture from the checkpoint's config (limitation below). *Update, 2026-11-16:* the code is written (`background_frame: true`; `infer` and `evaluate` now build the model from the checkpoint's config), and run `tennis_v2_bg` is planned.
 8. **Colour jitter strength.** 0.3 brightness, contrast and saturation, always applied: stronger than WASB's (0.1 at p = 0.5). Tuning it is an experiment, not a fix.
 9. **`torch.compile` speed** is unmeasured here; it needs a C compiler (`sudo apt install build-essential`).
 
@@ -205,7 +205,7 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 - The 4 px comparison uses `<=`; WASB uses `<`. The difference only matters for a distance of exactly 4.0.
 - At the source-resolution tolerance (1.6 px at 512x288), ground-truth quantisation of up to 0.29 px is a meaningful share of the budget. If results sit near the boundary, switch that protocol to label coordinates.
 - Mixed resolutions inside one clip are not supported. The source size is read from the first frame.
-- `infer` (and `evaluate`) assume the default V2 architecture. Checkpoints now record the config, but neither reads it yet; they must before the 12-channel background-frame experiment.
+- `infer` (and `evaluate`) assume the default V2 architecture. Checkpoints now record the config, but neither reads it yet; they must before the 12-channel background-frame experiment. (Done on 2026-11-16: see the update in item 7.)
 - Resume is per epoch. An interrupted epoch restarts from its beginning.
 
 ## 6. What was not verified
