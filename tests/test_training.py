@@ -780,9 +780,7 @@ def test_bad_mixup_alpha_is_rejected_before_any_file_is_written(alpha):
         ds = _make_synthetic_dataset()
         with pytest.raises(ValueError, match="mixup_alpha"):
             Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
-        for key in ("checkpoint_dir", "log_dir"):
-            assert [f for _, _, files in os.walk(config[key]) for f in files] == []
-        assert os.listdir(tmpdir) == []
+        assert os.listdir(tmpdir) == []  # holds checkpoint_dir and log_dir
 
 
 def test_every_default_config_key_is_read_by_the_code():

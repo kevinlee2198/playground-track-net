@@ -707,9 +707,9 @@ def _constant_batch(batch: int) -> FrameHeatmapPair:
     """Sample ``i`` filled with ``i`` in its frames and ``i * i`` in its
     heatmaps, so the weight and partner of each mix can be solved for."""
     values = torch.arange(batch, dtype=torch.float32).view(-1, 1, 1, 1)
-    return values.expand(batch, 9, 8, 16).clone(), (values**2).expand(
-        batch, 3, 8, 16
-    ).clone()
+    frames = values.expand(batch, 9, 8, 16).clone()
+    heatmaps = (values**2).expand(batch, 3, 8, 16).clone()
+    return frames, heatmaps
 
 
 class TestMixupBatch:
@@ -734,10 +734,10 @@ class TestMixupBatch:
         out_frames, out_heatmaps = mixup_batch(frames, heatmaps, alpha=0.5)
         partners = []
         for i in range(batch):
-            f, h = out_frames[i], out_heatmaps[i]
+            f, h = out_frames[i].flatten(), out_heatmaps[i].flatten()
             # One weight for every channel and pixel of the sample.
-            assert torch.all(f == f.flatten()[0]) and torch.all(h == h.flatten()[0])
-            f, h = f.flatten()[0].item(), h.flatten()[0].item()
+            assert torch.all(f == f[0]) and torch.all(h == h[0])
+            f, h = f[0].item(), h[0].item()
             if f == i and h == i * i:  # its own partner: returned unchanged
                 partners.append(i)
                 continue
