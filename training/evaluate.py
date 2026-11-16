@@ -14,13 +14,17 @@ def heatmap_to_position(
 ) -> tuple[float, float, bool]:
     """Extract ball position from a single-frame heatmap.
 
-    The position is the centroid of the largest connected component above
-    ``threshold``, the same rule inference uses, so a small noise blob does
-    not pull the position away from the ball.
+    The position is the centroid of the largest connected component of
+    pixels above ``threshold``, the same rule inference uses, so a small
+    noise blob does not pull the position away from the ball. Components
+    are 4-connected (pixels touching only at a corner are separate); of
+    equal-size largest components, the one whose first pixel comes first
+    in row-major order wins.
 
     Args:
         heatmap: (H, W) tensor with values in [0, 1].
-        threshold: Minimum value to consider as ball detection.
+        threshold: A pixel is part of a detection only if its value is
+            strictly greater than this.
 
     Returns:
         (x, y, detected): x/y in heatmap pixels and whether a ball was

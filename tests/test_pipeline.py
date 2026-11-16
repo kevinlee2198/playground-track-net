@@ -11,10 +11,13 @@ import cv2
 import numpy as np
 import pytest
 import torch
+import torch.nn as nn
 import yaml
 
+from data import build_dataset, discover_tennis_clips, generate_heatmap, source_to_model
 from main import build_parser, run_inference
 from training.run import (
+    _source_res_distance,
     load_config,
     run_evaluation,
     run_training,
@@ -188,6 +191,52 @@ def test_evaluation_rejects_aspect_ratio_change(tennis_root, tmp_path):
     config = _config_for(tennis_root) | {"input_size": [128, 128]}
     with pytest.raises(ValueError, match="aspect ratio"):
         run_evaluation(config, tmp_path / "unused.pt", split="test")
+
+
+def test_source_resolution_threshold_is_4px_of_the_source(tennis_root):
+    dataset = build_dataset(discover_tennis_clips(tennis_root), stride=3, radius=2.5)
+    assert _source_res_distance(dataset, 512, 288) == pytest.approx(1.6)
+    assert _source_res_distance(dataset, 128, 72) == pytest.approx(0.4)
+
+
+class _BallOffBy3pxModel(nn.Module):
+    """Predicts the ball 3 px (at model resolution) right of source pixel
+    (640, 360) in every frame."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.zeros(1))  # something for weights to hold
+
+    def forward(self, x):
+        b, _, h, w = x.shape
+        heatmap = generate_heatmap(
+            source_to_model(640, 1280, w) + 3,
+            source_to_model(360, 720, h),
+            visibility=1,
+            height=h,
+            width=w,
+        )
+        return heatmap.expand(b, 3, h, w).to(x.device)
+
+
+def test_evaluation_protocols_disagree_between_their_thresholds(
+    tennis_root, tmp_path, monkeypatch
+):
+    # Every test frame shows the ball at (640, 360); the model is 3 px off,
+    # inside 4.0 model pixels but outside 4 source pixels (1.6 model pixels).
+    label_path = tennis_root / "game3" / "Clip1" / "Label.csv"
+    with open(label_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["file name", "visibility", "x-coordinate", "y-coordinate"])
+        writer.writerows((f"{i:04d}.jpg", 1, 640, 360) for i in range(6))
+    monkeypatch.setattr("training.run.TrackNet", _BallOffBy3pxModel)
+    weights = tmp_path / "weights.pt"
+    torch.save(_BallOffBy3pxModel().state_dict(), weights)
+    config = _config_for(tennis_root) | {"num_workers": 0, "pin_memory": False}
+
+    result = run_evaluation(config, weights, split="test")
+    assert (result["model_res_4px"]["tp"], result["model_res_4px"]["fp1"]) == (6, 0)
+    assert (result["source_res_4px"]["tp"], result["source_res_4px"]["fp1"]) == (0, 6)
 
 
 def test_write_label_overlays(tennis_root, tmp_path):

@@ -12,6 +12,7 @@ from data.heatmap import generate_heatmap, model_to_source, source_to_model
 from data.labels import load_labels, visibility_counts
 from data.sources import build_dataset, discover_tennis_clips, split_clips
 from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
+from inference.video_preprocess import preprocess_frame
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +340,37 @@ class TestTrackNetDataset:
         (clip / "0005.jpg").unlink()
         with pytest.raises(ValueError, match="Clip1"):
             TrackNetDataset(clip, clip / "Label.csv")
+
+    def test_image_without_label_row_raises(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        cv2.imwrite(str(clip / "0006.jpg"), np.zeros((720, 1280, 3), np.uint8))
+        with pytest.raises(ValueError, match=r"Clip1.*files without a label: \[6\]"):
+            TrackNetDataset(clip, clip / "Label.csv")
+
+    def test_frames_match_inference_preprocessing_on_colour_images(self, tmp_path):
+        # Random colours, so swapping BGR and RGB on either side changes the
+        # tensor; 1280x720, so both sides resize.
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        rng = np.random.default_rng(0)
+        paths = []
+        for i in range(3):
+            path = frames_dir / f"{i:04d}.png"
+            cv2.imwrite(str(path), rng.integers(0, 256, (720, 1280, 3), np.uint8))
+            paths.append(path)
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            writer.writerows((i, 0, 0, 0) for i in range(3))
+
+        frames, _ = TrackNetDataset(frames_dir, csv_path)[0]
+        expected = []
+        for path in paths:
+            bgr = cv2.imread(str(path))  # as infer reads an image directory
+            assert bgr is not None
+            expected.append(preprocess_frame(bgr))
+        assert torch.equal(frames, torch.from_numpy(np.concatenate(expected)))
 
     def test_image_with_non_integer_name_raises_naming_it(self, tennis_root):
         clip = tennis_root / "game1" / "Clip1"

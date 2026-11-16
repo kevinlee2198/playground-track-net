@@ -358,6 +358,53 @@ def test_non_finite_loss_stops_training():
             trainer._train_one_epoch()
 
 
+def test_non_finite_loss_in_train_raises_and_writes_no_checkpoint():
+    class NanFromStep3(nn.Module):
+        """Finite for epoch 1 (steps 1-2), NaN from step 3 on."""
+
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, logits, target):
+            self.calls += 1
+            loss = nn.functional.binary_cross_entropy_with_logits(logits, target)
+            return loss * float("nan") if self.calls > 2 else loss
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=4)
+        config = _make_test_config(tmpdir, epochs=3)
+        trainer = Trainer(SimpleModel(), NanFromStep3(), ds, ds, config)
+        with pytest.raises(FloatingPointError, match="step 3"):
+            trainer.train()
+        files = os.listdir(trainer.checkpoint_dir)
+        assert "latest.pt" in files and set(files) <= {"latest.pt", "best.pt"}
+        for name in files:  # all written by epoch 1, none from the NaN state
+            ckpt = torch.load(
+                os.path.join(trainer.checkpoint_dir, name), weights_only=True
+            )
+            assert (ckpt["epoch"], ckpt["global_step"]) == (1, 2), name
+
+
+def test_resume_across_lr_milestone_restores_lr_and_schedule():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=4)
+        config = _make_test_config(tmpdir, epochs=2) | {
+            "lr_schedule": {"name": "MultiStepLR", "milestones": [1], "gamma": 0.1}
+        }
+        first = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        first.train()
+        lr = first.optimizer.param_groups[0]["lr"]
+        assert lr == pytest.approx(1e-4)  # 1e-3 decayed once, at the milestone
+
+        second = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        assert second.optimizer.param_groups[0]["lr"] == pytest.approx(1e-3)
+        second.load_checkpoint(os.path.join(tmpdir, "checkpoints", "test", "latest.pt"))
+        assert second.optimizer.param_groups[0]["lr"] == lr
+        assert second.scheduler.last_epoch == first.scheduler.last_epoch == 2
+        assert second.scheduler.get_last_lr() == first.scheduler.get_last_lr()
+
+
 def test_float16_amp_is_rejected():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = _make_test_config(tmpdir) | {"amp_dtype": "float16"}
