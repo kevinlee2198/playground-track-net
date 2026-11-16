@@ -135,14 +135,19 @@ def score_frames(config: dict, weights: str) -> tuple[list[dict], dict[float, Co
                     start = next(starts)
                     for slot, heatmap in enumerate(window):
                         label = clip.labels[start + slot]
+                        # A label that is not visible has no position to report.
+                        gx = gy = math.nan
+                        if label.visible:
+                            gx = source_to_model(label.x, source_width, width)
+                            gy = source_to_model(label.y, source_height, height)
                         row = {
                             "clip": name,
                             "frame": label.frame,
                             "slot": slot,
                             "raw_vis": raw[label.frame],
                             "visible": int(label.visible),
-                            "gx": source_to_model(label.x, source_width, width),
-                            "gy": source_to_model(label.y, source_height, height),
+                            "gx": gx,
+                            "gy": gy,
                             "max": float(heatmap.max()),
                         }
                         for threshold in THRESHOLDS:
