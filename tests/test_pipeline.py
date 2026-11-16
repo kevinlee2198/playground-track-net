@@ -145,6 +145,23 @@ def test_resume_warns_about_changed_config(tennis_root, tmp_path, caplog):
     assert len(warnings) == 1, warnings
     assert "heatmap_radius: 2.5 -> 3.0" in warnings[0]
     assert "epochs" not in warnings[0] and "max_steps" not in warnings[0]
+    assert "have no effect" not in warnings[0]
+
+
+def test_resume_says_changed_optimizer_settings_have_no_effect(
+    tennis_root, tmp_path, caplog
+):
+    config = _fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2)
+    run_training(config)
+    changed = config | {"weight_decay": 0.05, "epochs": 2, "max_steps": 4}
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        run_training(changed, resume=tmp_path / "checkpoints" / "e2e" / "latest.pt")
+    warnings = _config_change_warnings(caplog)
+    assert len(warnings) == 1, warnings
+    assert "weight_decay: 0.01 -> 0.05" in warnings[0]
+    assert warnings[0].endswith(
+        "restored from the checkpoint, so these changes have no effect: weight_decay"
+    )
 
 
 def test_cli_log_lines_carry_timestamp_level_and_logger(tennis_root, tmp_path):

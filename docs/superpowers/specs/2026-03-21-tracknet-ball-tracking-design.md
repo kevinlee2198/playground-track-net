@@ -252,8 +252,9 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 
 | Parameter | Value |
 |-----------|-------|
-| Optimizer | AdamW |
+| Optimizer | AdamW (config `optimizer`: `AdamW` or `Adam`) |
 | Learning rate | 1e-4 |
+| Weight decay | 0.01 (config `weight_decay`; decoupled for AdamW, an L2 penalty for Adam) |
 | LR schedule | Multi-step decay (gamma=0.1) at epochs 20, 25 |
 | Batch size | 2 (constrained by 8GB VRAM on RTX 3070). Revised 2026-11-15: with GroupNorm this only affects gradient noise; TrackNetV3 and WASB use batch 8–10 with Adam at 1e-3, worth trying if VRAM allows |
 | Epochs | 30 |

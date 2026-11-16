@@ -111,11 +111,11 @@ def _make_test_config(
     return {
         "optimizer": "AdamW",
         "learning_rate": 1e-3,
-        "lr_schedule": {"name": "MultiStepLR", "milestones": [20, 25], "gamma": 0.1},
+        "weight_decay": 0.01,
+        "lr_schedule": {"milestones": [20, 25], "gamma": 0.1},
         "batch_size": 2,
         "epochs": epochs,
         "input_size": [64, 32],
-        "seq_len": 3,
         "seed": 42,
         "num_workers": 0,
         "pin_memory": False,
@@ -143,13 +143,11 @@ def test_config_loads_from_yaml():
         config = yaml.safe_load(f)
     assert config["optimizer"] == "AdamW"
     assert config["learning_rate"] == 1e-4
-    assert config["lr_schedule"]["name"] == "MultiStepLR"
-    assert config["lr_schedule"]["milestones"] == [20, 25]
-    assert config["lr_schedule"]["gamma"] == 0.1
+    assert config["weight_decay"] == 0.01
+    assert config["lr_schedule"] == {"milestones": [20, 25], "gamma": 0.1}
     assert config["batch_size"] == 2
     assert config["epochs"] == 30
     assert config["input_size"] == [512, 288]
-    assert config["seq_len"] == 3
     assert config["heatmap_radius"] == 2.5
     assert config["train_stride"] == 1
     assert config["log_every"] == 100
@@ -390,7 +388,7 @@ def test_resume_across_lr_milestone_restores_lr_and_schedule():
     with tempfile.TemporaryDirectory() as tmpdir:
         ds = _make_synthetic_dataset(num_samples=4)
         config = _make_test_config(tmpdir, epochs=2) | {
-            "lr_schedule": {"name": "MultiStepLR", "milestones": [1], "gamma": 0.1}
+            "lr_schedule": {"milestones": [1], "gamma": 0.1}
         }
         first = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
         first.train()
@@ -626,6 +624,48 @@ def test_log_every_must_be_a_positive_int(log_every):
         ds = _make_synthetic_dataset()
         with pytest.raises(ValueError, match="log_every"):
             Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+
+
+@pytest.mark.parametrize(
+    ("name", "optimizer_class"),
+    [("AdamW", torch.optim.AdamW), ("Adam", torch.optim.Adam)],
+)
+def test_optimizer_is_built_from_config(name, optimizer_class):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"optimizer": name, "weight_decay": 0.05}
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        # Exact type: AdamW subclasses Adam.
+        assert type(trainer.optimizer) is optimizer_class
+        group = trainer.optimizer.param_groups[0]
+        assert group["lr"] == config["learning_rate"]
+        assert group["weight_decay"] == 0.05
+
+
+def test_unknown_optimizer_is_rejected_before_any_file_is_written():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"optimizer": "SGD"}
+        ds = _make_synthetic_dataset()
+        with pytest.raises(ValueError, match="optimizer 'SGD'.*AdamW, Adam"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        assert os.listdir(tmpdir) == []
+
+
+def test_every_default_config_key_is_read_by_the_code():
+    """A key nothing reads looks like a setting but changes nothing."""
+    repo = pathlib.Path(__file__).parent.parent
+    config = yaml.safe_load((repo / "configs" / "default.yaml").read_text())
+    keys = set(config)
+    for section in config.values():
+        if isinstance(section, dict):
+            keys |= set(section)
+    source = (repo / "main.py").read_text() + "".join(
+        path.read_text()
+        for package in ("training", "data", "models", "inference", "utils")
+        for path in (repo / package).rglob("*.py")
+    )
+    unread = sorted(key for key in keys if f'"{key}"' not in source)
+    assert unread == []
 
 
 def test_writer_closed_when_training_fails():

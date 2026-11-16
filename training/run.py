@@ -125,6 +125,8 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
 
 # Keys a resumed run is expected to change: they only set where it stops.
 _RUN_LENGTH_KEYS = ("epochs", "max_steps")
+# Settings held in the optimizer and scheduler state that a resume restores.
+_RESTORED_KEYS = ("optimizer", "learning_rate", "weight_decay", "lr_schedule")
 
 
 def _warn_config_changes(stored: dict, current: dict) -> None:
@@ -135,11 +137,18 @@ def _warn_config_changes(stored: dict, current: dict) -> None:
         for key in sorted(stored.keys() | current.keys())
         if key not in _RUN_LENGTH_KEYS and stored.get(key) != current.get(key)
     ]
-    if changes:
-        logger.warning(
-            "Resuming with a config that differs from the checkpoint's: %s",
-            "; ".join(changes),
+    if not changes:
+        return
+    message = "Resuming with a config that differs from the checkpoint's: " + "; ".join(
+        changes
+    )
+    restored = [key for key in _RESTORED_KEYS if stored.get(key) != current.get(key)]
+    if restored:
+        message += (
+            ". The optimizer and LR schedule are restored from the checkpoint, "
+            "so these changes have no effect: " + ", ".join(restored)
         )
+    logger.warning(message)
 
 
 def _source_res_distance(dataset: ConcatDataset, width: int, height: int) -> float:

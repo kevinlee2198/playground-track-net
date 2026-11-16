@@ -74,9 +74,9 @@ playground-track-net/
     test_models.py      # Backbone, loss, V2 wrapper, V5 wiring (81 tests)
     test_mdd.py         # MDD module unit tests (21 tests)
     test_data.py        # Labels, clip discovery, dataset, heatmap, transforms (64 tests)
-    test_training.py    # Trainer loop, metrics, checkpointing, resume (48 tests)
+    test_training.py    # Trainer loop, metrics, checkpointing, resume (52 tests)
     test_inference.py   # Postprocess, tracker, video preprocess (28 tests)
-    test_pipeline.py    # End to end: train, evaluate, check-data, infer (24 tests)
+    test_pipeline.py    # End to end: train, evaluate, check-data, infer (25 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
@@ -99,7 +99,7 @@ playground-track-net/
 | CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 24 in `test_pipeline.py` |
 | Full training run + published weights | Not started; see [Known Issues](#known-issues) | — |
 
-**Total: 266 tests (65–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 271 tests (65–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
@@ -110,7 +110,7 @@ Details, file references and the measured preflight numbers are in [docs/2026-11
 **Open before the full run:**
 
 - **Where it runs.** 30 epochs would take about 6.1 hours on the RTX 3070 Laptop (8 GB) without `torch.compile`, extrapolated from one measured epoch.
-- **Batch size and learning rate.** Batch 2 (the default) peaks at 1,769 MiB and ran at 8.6–8.7 steps per second through the full epoch. Batch 8 ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10; we use AdamW at 1e-4 with batch 2.
+- **Batch size and learning rate.** Batch 2 (the default) peaks at 1,769 MiB and ran at 8.6–8.7 steps per second through the full epoch. Batch 8 ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10; we use AdamW at 1e-4 with weight decay 0.01 and batch 2. `optimizer` (`AdamW` or `Adam`), `learning_rate` and `weight_decay` are set in the config. Under `Adam`, `weight_decay` is an L2 penalty and PyTorch's default is 0, so set it to 0 when reproducing the reference recipe.
 - **`torch.compile`** needs a C compiler, which this machine lacks, so `configs/default.yaml` sets `compile_model: false` and the speed-up is unmeasured. With it set to true on a CUDA machine without a compiler, `train` stops at startup and says how to fix it.
 - **Mixup** is implemented but not wired in. **Median background frame** input is the planned first experiment after a baseline. **Colour jitter strength** (0.3 brightness, contrast and saturation, always applied) is stronger than WASB's (0.1 at p = 0.5) and untuned.
 

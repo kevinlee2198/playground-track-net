@@ -178,7 +178,7 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 
 **Decided (2026-11-15):**
 
-- First run is **V2 on tennis** with the default recipe: AdamW at 1e-4, batch 2, 30 epochs, MultiStepLR at 20 and 25, radius 2.5, training stride 1.
+- First run is **V2 on tennis** with the default recipe: AdamW at 1e-4 with weight decay 0.01, batch 2, 30 epochs, MultiStepLR at 20 and 25, radius 2.5, training stride 1.
 - Split by game: train game1–6, validate on game7, test on game8–10 (§4.4).
 - Report both evaluation protocols (`model_res_4px` and `source_res_4px`), each with `recall` and `recall_strict`. `best.pt` is selected by `f1` at 4 px, 512x288.
 - `compile_model: false` by default until a C compiler is installed.

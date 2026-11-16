@@ -83,6 +83,12 @@ def _check_plain_config(value: object, path: str = "") -> None:
         )
 
 
+_OPTIMIZERS: dict[str, type[torch.optim.Adam]] = {
+    "AdamW": torch.optim.AdamW,
+    "Adam": torch.optim.Adam,
+}
+
+
 class Trainer:
     """Training loop for TrackNet with AMP, logging, and checkpointing."""
 
@@ -97,8 +103,9 @@ class Trainer:
         """
         Raises:
             ValueError: If ``config`` holds a value a ``weights_only`` load
-                cannot restore, ``log_every`` is not a positive int, or the
-                train set is smaller than one batch.
+                cannot restore, ``log_every`` is not a positive int, the
+                train set is smaller than one batch, or ``optimizer`` is not
+                ``AdamW`` or ``Adam``.
         """
         _check_plain_config(config)
         self.config = config
@@ -155,9 +162,17 @@ class Trainer:
             persistent_workers=use_persistent,
         )
 
-        # Optimizer
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=config["learning_rate"]
+        # Optimizer. weight_decay is decoupled for AdamW and an L2 penalty for Adam.
+        optimizer_name = config["optimizer"]
+        if optimizer_name not in _OPTIMIZERS:
+            raise ValueError(
+                f"Unsupported optimizer {optimizer_name!r}: use one of "
+                f"{', '.join(_OPTIMIZERS)}"
+            )
+        self.optimizer = _OPTIMIZERS[optimizer_name](
+            self.model.parameters(),
+            lr=config["learning_rate"],
+            weight_decay=config["weight_decay"],
         )
 
         # LR Scheduler
