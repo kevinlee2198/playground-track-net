@@ -68,23 +68,40 @@ class FrameColorJitter:
         return jittered.flatten(0, 1), heatmaps
 
 
-class Mixup:
-    """Mixup augmentation: blend two samples with a random lambda from Beta(alpha, alpha)."""
+def mixup_batch(
+    frames: torch.Tensor, heatmaps: torch.Tensor, alpha: float
+) -> FrameHeatmapPair:
+    """TrackNetV3's sample mixup of a training batch.
 
-    def __init__(self, alpha: float = 1.0) -> None:
-        self.alpha = alpha
+    For each of the B samples a weight ``lam`` is drawn from Beta(alpha,
+    alpha) and replaced by ``max(lam, 1 - lam)``, so each sample keeps the
+    larger share. One random permutation of the batch picks each sample's
+    partner, and the result is ``x * lam + x[perm] * (1 - lam)`` for the
+    frames and the heatmaps alike, with one ``lam`` per sample over its
+    channels, height and width. A sample the permutation maps to itself, as
+    in a batch of one, comes back unchanged.
 
-    def __call__(
-        self,
-        frames_a: torch.Tensor,
-        heatmaps_a: torch.Tensor,
-        frames_b: torch.Tensor,
-        heatmaps_b: torch.Tensor,
-    ) -> FrameHeatmapPair:
-        lam = torch.distributions.Beta(self.alpha, self.alpha).sample().item()
-        frames = lam * frames_a + (1 - lam) * frames_b
-        heatmaps = lam * heatmaps_a + (1 - lam) * heatmaps_b
-        return frames, heatmaps
+    The random numbers come from torch's global generator, drawn on the CPU,
+    so ``torch.manual_seed`` covers them whatever device the batch is on.
+    Outputs have the inputs' shape, dtype and device.
+
+    Raises:
+        ValueError: If ``alpha`` is not above 0.
+    """
+    if not alpha > 0:
+        raise ValueError(f"mixup alpha must be positive, got {alpha}")
+    batch = frames.shape[0]
+    lam = torch.distributions.Beta(alpha, alpha).sample((batch,))
+    lam = torch.maximum(lam, 1 - lam)
+    perm = torch.randperm(batch)
+
+    def mix(x: torch.Tensor) -> torch.Tensor:
+        weight = lam.to(x.device, x.dtype).view(-1, *[1] * (x.dim() - 1))
+        # lerp(partner, x, lam) = x * lam + partner * (1 - lam), and is
+        # exactly x where the partner is x.
+        return torch.lerp(x[perm.to(x.device)], x, weight)
+
+    return mix(frames), mix(heatmaps)
 
 
 class Compose:

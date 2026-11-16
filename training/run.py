@@ -198,6 +198,7 @@ _VALUE_BEFORE_KEY: dict[str, object] = {
     "horizontal_flip": True,
     "background_frame": False,
     "color_jitter": {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0},
+    "mixup_alpha": 0.0,
 }
 
 

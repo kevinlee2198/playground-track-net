@@ -25,6 +25,7 @@ from data import (
     discover_tennis_clips,
     generate_heatmap,
     median_frame,
+    mixup_batch,
     source_to_model,
 )
 from inference.video_preprocess import extract_frames
@@ -107,6 +108,33 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_training_with_mixup_trains_and_validates(
+    tennis_root, tmp_path, monkeypatch, background
+):
+    calls = []
+
+    def counting_mixup(frames, heatmaps, alpha):
+        calls.append(alpha)
+        return mixup_batch(frames, heatmaps, alpha)
+
+    monkeypatch.setattr("training.trainer.mixup_batch", counting_mixup)
+    config = _fast_training_config(
+        tennis_root,
+        tmp_path,
+        epochs=1,
+        max_steps=2,
+        background_frame=background,
+        mixup_alpha=0.5,
+    )
+    run_training(config)
+    assert calls == [0.5, 0.5]  # once per training step
+    checkpoint = torch.load(
+        tmp_path / "checkpoints" / "e2e" / "latest.pt", weights_only=True
+    )
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (1, 2)
 
 
 class _RecordingModel(nn.Module):
@@ -423,6 +451,15 @@ def test_resume_reads_a_checkpoint_without_color_jitter_as_the_default(caplog):
     warnings = _warnings_for(caplog, stored, changed)
     assert len(warnings) == 1, warnings
     assert "color_jitter:" in warnings[0]
+
+
+def test_resume_reads_a_checkpoint_without_mixup_alpha_as_mixup_off(caplog):
+    stored = {"seed": 42}  # saved before mixup_alpha
+    assert _warnings_for(caplog, stored, {"seed": 42, "mixup_alpha": 0.0}) == []
+
+    warnings = _warnings_for(caplog, stored, {"seed": 42, "mixup_alpha": 0.5})
+    assert len(warnings) == 1, warnings
+    assert "mixup_alpha: 0.0 -> 0.5" in warnings[0]
 
 
 def test_resume_shows_a_key_the_current_config_lacks_as_none(caplog):

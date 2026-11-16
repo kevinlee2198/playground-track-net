@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import random
 import time
@@ -13,6 +14,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
+from data import mixup_batch
 from training.evaluate import evaluate_epoch
 
 logger = logging.getLogger(__name__)
@@ -103,9 +105,10 @@ class Trainer:
         """
         Raises:
             ValueError: If ``config`` holds a value a ``weights_only`` load
-                cannot restore, ``log_every`` is not a positive int, the
-                train set is smaller than one batch, or ``optimizer`` is not
-                ``AdamW`` or ``Adam``.
+                cannot restore, ``log_every`` is not a positive int,
+                ``mixup_alpha`` is not a finite number >= 0, the train set is
+                smaller than one batch, or ``optimizer`` is not ``AdamW`` or
+                ``Adam``.
         """
         _check_plain_config(config)
         self.config = config
@@ -116,6 +119,17 @@ class Trainer:
         if type(self.log_every) is not int or self.log_every <= 0:  # not bool either
             raise ValueError(
                 f"log_every must be a positive int, got {self.log_every!r}"
+            )
+
+        # Sample mixup on training batches; 0 turns it off. Checked with the
+        # other settings, before the log and checkpoint directories exist.
+        self.mixup_alpha: float = config["mixup_alpha"]
+        if type(self.mixup_alpha) not in (int, float) or not (
+            math.isfinite(self.mixup_alpha) and self.mixup_alpha >= 0
+        ):
+            raise ValueError(
+                "mixup_alpha must be a finite number >= 0 (0 turns mixup off), "
+                f"got {self.mixup_alpha!r}"
             )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -221,11 +235,13 @@ class Trainer:
     def _train_one_epoch(self) -> float:
         """Run one training epoch. Returns average loss.
 
-        The model must accept ``model(frames, return_logits=True)``. Only the
-        forward pass runs under autocast; the loss is computed from float32
-        logits outside it. Stops early once ``max_steps`` optimizer steps have
-        been taken in total, and sets ``epoch_complete`` to whether every
-        batch of the epoch was trained.
+        The model must accept ``model(frames, return_logits=True)``. With
+        ``mixup_alpha`` above 0 each batch is mixed by ``mixup_batch`` on the
+        device before the forward pass. Only the forward pass runs under
+        autocast; the loss is computed from float32 logits outside it. Stops
+        early once ``max_steps`` optimizer steps have been taken in total, and
+        sets ``epoch_complete`` to whether every batch of the epoch was
+        trained.
 
         Raises:
             FloatingPointError: If the loss at any step is NaN or infinite.
@@ -240,6 +256,8 @@ class Trainer:
         for frames, heatmaps in self.train_loader:
             frames = frames.to(self.device)
             heatmaps = heatmaps.to(self.device)
+            if self.mixup_alpha > 0:
+                frames, heatmaps = mixup_batch(frames, heatmaps, self.mixup_alpha)
 
             self.optimizer.zero_grad(set_to_none=True)
 

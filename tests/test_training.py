@@ -65,6 +65,21 @@ class PerfectModel(nn.Module):
         return out
 
 
+class RecordingModel(SimpleModel):
+    """Trains like SimpleModel and records every input, split by whether it
+    came in training or evaluation mode."""
+
+    def __init__(self):
+        super().__init__()
+        self.train_inputs: list[torch.Tensor] = []
+        self.eval_inputs: list[torch.Tensor] = []
+
+    def forward(self, x, return_logits=False):
+        inputs = self.train_inputs if self.training else self.eval_inputs
+        inputs.append(x.detach().cpu())
+        return super().forward(x, return_logits)
+
+
 class CentreBallModel(SimpleModel):
     """Trains like SimpleModel, but its probabilities always mark one pixel at
     the frame centre, where _make_synthetic_dataset puts the ball, so
@@ -118,6 +133,7 @@ def _make_test_config(
         "epochs": epochs,
         "input_size": [64, 32],
         "seed": 42,
+        "mixup_alpha": 0.0,
         "num_workers": 0,
         "pin_memory": False,
         "persistent_workers": False,
@@ -696,6 +712,76 @@ def test_unknown_optimizer_is_rejected_before_any_file_is_written():
         ds = _make_synthetic_dataset()
         with pytest.raises(ValueError, match="optimizer 'SGD'.*AdamW, Adam"):
             Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        assert os.listdir(tmpdir) == []
+
+
+def test_mixup_changes_training_batches_and_leaves_validation_alone():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"mixup_alpha": 0.5, "batch_size": 4}
+        train_ds = _make_synthetic_dataset(num_samples=8)
+        val_ds = _make_synthetic_dataset(num_samples=4)
+        model = RecordingModel()
+        Trainer(model, SimpleLoss(), train_ds, val_ds, config).train()
+
+        received = torch.cat(model.train_inputs)
+        assert received.shape == (8, 9, 32, 64)
+        samples = train_ds.tensors[0]
+        mixed = [x for x in received if not any(torch.equal(x, s) for s in samples)]
+        assert mixed
+        assert torch.equal(torch.cat(model.eval_inputs), val_ds.tensors[0])
+
+
+def test_mixup_off_calls_nothing_and_leaves_the_batches_and_seed_stream_alone(
+    monkeypatch,
+):
+    def no_mixup(*args, **kwargs):
+        raise AssertionError("mixup_batch called with mixup_alpha 0")
+
+    monkeypatch.setattr("training.trainer.mixup_batch", no_mixup)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=2)
+        assert config["mixup_alpha"] == 0.0
+        train_ds = _make_synthetic_dataset(num_samples=4)
+        val_ds = _make_synthetic_dataset(num_samples=2)
+        model = RecordingModel()
+        Trainer(model, SimpleLoss(), train_ds, val_ds, config).train()
+        rng_after = torch.get_rng_state()
+        cuda_rng_after = (
+            torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        )
+        monkeypatch.undo()
+
+        # What a Trainer fed the model before mixup existed: its loaders'
+        # batches under the same seed, training then validation each epoch.
+        reference = Trainer(
+            SimpleModel(),
+            SimpleLoss(),
+            train_ds,
+            val_ds,
+            config | {"experiment_name": "reference"},
+        )
+        expected = []
+        for _ in range(config["epochs"]):
+            expected += [frames for frames, _ in reference.train_loader]
+            list(reference.val_loader)
+
+        assert len(model.train_inputs) == len(expected) == 4
+        assert all(torch.equal(a, b) for a, b in zip(model.train_inputs, expected))
+        # No random number was drawn beyond the loaders' own.
+        assert torch.equal(torch.get_rng_state(), rng_after)
+        if cuda_rng_after is not None:
+            assert torch.equal(torch.cuda.get_rng_state(), cuda_rng_after)
+
+
+@pytest.mark.parametrize("alpha", [-0.1, float("nan"), "0.5", True])
+def test_bad_mixup_alpha_is_rejected_before_any_file_is_written(alpha):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"mixup_alpha": alpha}
+        ds = _make_synthetic_dataset()
+        with pytest.raises(ValueError, match="mixup_alpha"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        for key in ("checkpoint_dir", "log_dir"):
+            assert [f for _, _, files in os.walk(config[key]) for f in files] == []
         assert os.listdir(tmpdir) == []
 
 

@@ -26,6 +26,7 @@ color_jitter:           # one draw per training window, applied to every frame i
   contrast: 0.3
   saturation: 0.3
   p: 1.0                # share of windows that are jittered
+mixup_alpha: 0.0        # Beta(alpha, alpha) sample mixup on each training batch; 0 turns it off (TrackNetV3 uses 0.5)
 log_every: 100          # steps between running-loss log lines
 
 # DataLoader
