@@ -185,6 +185,8 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 - The first experiment after a baseline is the **median background frame** input.
 - **V5 is deferred.** If revisited, fix MDD and realign R-STR first (§4.3).
 
+**Update, 2026-11-16:** the first run is done (30 epochs in 5.7 hours on the laptop), which settles item 1 for V2. What it showed, and the experiments that follow from it, are in [2026-11-16-training-results.md](2026-11-16-training-results.md). The rest of this section is as written on 2026-11-15.
+
 **Open:**
 
 1. **Where training runs.** The local GPU is an RTX 3070 Laptop with 8 GB: enough for V2, limiting for batch size and multi-sport pre-training. A 30-epoch run would take about 6.1 hours here without `torch.compile`, extrapolated from one measured epoch (§4.4). Measured peak memory for V2 training at batch 2: 1,769 MiB; an earlier single-step measurement gave about 1.9 GB for V5.

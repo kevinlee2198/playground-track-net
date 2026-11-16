@@ -50,9 +50,9 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - Training unit tests use stub models; tests/test_pipeline.py runs the real TrackNet at 128x72
 
 ## Status (2026-11-16)
-- First full run done: `tennis_v2_baseline` (default recipe, 30 epochs, 5.6 h on this laptop). Validation (game7): F1 0.949 at 4 px, 512x288; 0.771 at 4 px of the source. Nothing has been evaluated on the test split.
+- First full run done: `tennis_v2_baseline` (default recipe, 30 epochs, 5.7 h on this laptop). Validation (game7): F1 0.949 at 4 px, 512x288; 0.771 at 4 px of the source. Nothing has been evaluated on the test split.
 - Splits (configs/default.yaml): train game1–6, val game7, test game8–10. WASB trains on game1–7, so say so beside any comparison. Leave the test split alone until a model is final.
-- The baseline's predictions sit 1.1 px left of the labels on the validation game (results doc §3–§4). Being tested: `horizontal_flip: false` (configs/tennis_v2_noflip.yaml).
+- The baseline's predictions sit 1.1 px left of the labels on the validation game, caused by the flip augmentation (results doc §3–§4). Run `tennis_v2_noflip` (configs/tennis_v2_noflip.yaml) has no such offset at epoch 4; its final numbers are pending.
 - Still open (review doc §5): batch size and learning rate, mixup, median background frame, jitter strength, `torch.compile` speed.
 - V5 is deferred.
 
@@ -61,7 +61,8 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - Windows are never padded: up to two frames at the end of each clip are neither trained on with full context nor scored (9 frames in val, 35 in test). `infer` pads its last window so every frame gets a prediction
 - Map label coordinates between source and model resolution only with `source_to_model` / `model_to_source` (data/heatmap.py): `(x + 0.5) * scale - 0.5`, through pixel centres as `cv2.resize` does. This deliberately departs from TrackNetV3, whose plain `x * scale` puts the target 0.3 px off the ball at 1280→512
 - Tennis visibility 3 rows carry coordinates but count as ball-absent (`visible_flags=(1, 2)`)
-- Tennis labels are about 1.5 source px right of and 1.3 px below the ball in every game. With `horizontal_flip: true` the horizontal part becomes orientation-dependent and shows up as a constant 1.1 px error on unseen games (results doc §4)
+- Tennis labels are about 1.5 source px right of and 1.4 px below the ball in game1–7 (test games not measured). With `horizontal_flip: true` the horizontal part becomes orientation-dependent, and the baseline was 1.1 px off on the validation game because of it (results doc §4). A model trained without the flip reports the label convention, not the ball's visual centre
+- Analysis scripts in scripts/analysis/ (per-frame validation errors, prediction offset with mirrored input, label versus ball). Never point them at game8–10
 - Models return sigmoid heatmaps by default; training calls `model(frames, return_logits=True)` and the loss runs in float32 on the logits. Backbone, R-STR head and TrackNet all take `return_logits`
 - Two evaluation protocols: `model_res_4px` (4 px at 512x288) and `source_res_4px` (4 px in source pixels = 1.6 px at 512x288 for 1280-wide video). `evaluate` reports both; per-epoch validation and best.pt selection use `f1` at 4 px, 512x288 only
 - Checkpoints load with `weights_only=True`, so the config must hold only plain YAML types (dict, list, str, int, float, bool, None); the Trainer rejects anything else
