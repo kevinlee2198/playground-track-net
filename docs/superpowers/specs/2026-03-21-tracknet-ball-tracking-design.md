@@ -6,7 +6,7 @@
 
 ### Revision summary (2026-11-15)
 
-The pre-training review changed these parts of the design. The code now implements the revisions to §6, §7, §9, §11 and §13 (the review's §4 gives the commit for each, and its §4.4 the real-data preflight). The V5 revisions to §4 and §5 are not implemented, because V5 is deferred; §1 and §12 are not code changes.
+The pre-training review changed these parts of the design. The "In code" column says which revisions the code implements; the review's §4 gives the commit for each, and its §4.4 the real-data preflight.
 
 | Section | Change | In code |
 |---|---|---|
