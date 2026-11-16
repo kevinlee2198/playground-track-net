@@ -108,7 +108,7 @@ Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) is planned. It differs from `tenn
 
 **A check of the input, before any training.** No model involved; game1–7 only, every 5th frame of each clip, against that clip's median background.
 
-- The camera is static within a clip: the mean difference between a frame and its clip's background is 2.5–4.4 of 255, by game.
+- The camera is static within a clip: the mean absolute difference between a frame and its clip's background is 2.5–4.4 of 255, by game. Differences here are at 512x288, taking the largest of the three colour channels at each pixel.
 - The ball stands out from the background: at a visible ball, the largest difference from the background in the 5x5 patch at the label has a median of 83–119 of 255 by game, and is under 20 in 0–2.7% of frames by game (1.1% on game7).
 
 The script for this check is not in the repository.
