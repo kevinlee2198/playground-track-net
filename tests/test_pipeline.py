@@ -295,3 +295,66 @@ def test_label_overlays_count_visible_labels_outside_frame(
     for split, outside in (("train", 0), ("val", 0), ("test", 1)):
         line = rf"{split}: \d+ clips, .*, {outside} visible labels outside the frame"
         assert re.search(line, caplog.text), (split, caplog.text)
+
+
+def _remove_frame(clip_dir: Path, stem: str) -> None:
+    """Delete frame ``stem`` from both the clip's images and its Label.csv."""
+    (clip_dir / f"{stem}.jpg").unlink()
+    label_path = clip_dir / "Label.csv"
+    with open(label_path, newline="") as f:
+        rows = [row for row in csv.reader(f) if row[0] != f"{stem}.jpg"]
+    with open(label_path, "w", newline="") as f:
+        csv.writer(f).writerows(rows)
+
+
+def _gap_line(split: str, gaps: int) -> str:
+    return (
+        rf"{split}: \d+ clips, .* visible labels outside the frame, "
+        rf"{gaps} clips with non-consecutive frame ids, source sizes 1280x720\n"
+    )
+
+
+def test_check_data_reports_no_frame_gaps_in_consecutive_clips(
+    tennis_root, tmp_path, caplog
+):
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+    for split in ("train", "val", "test"):
+        assert re.search(_gap_line(split, 0), caplog.text), (split, caplog.text)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_check_data_reports_clip_with_frame_gap(tennis_root, tmp_path, caplog):
+    clip_dir = tennis_root / "game3" / "Clip1"
+    _remove_frame(clip_dir, "0003")  # frames 0, 1, 2, 4, 5
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+    assert re.search(_gap_line("test", 1), caplog.text), caplog.text
+    assert re.search(_gap_line("train", 0), caplog.text), caplog.text
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1, warnings
+    assert str(clip_dir) in warnings[0] and "2 to 4" in warnings[0], warnings
+
+
+def test_training_rejects_empty_val_split(tennis_root, tmp_path):
+    config = _fast_training_config(tennis_root, tmp_path) | {
+        "data": _config_for(tennis_root, val_groups=[])["data"]
+    }
+    with pytest.raises(ValueError, match=r"val split.*data\.val_groups"):
+        run_training(config)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_evaluation_rejects_empty_split(tennis_root, tmp_path):
+    config = _config_for(tennis_root, test_groups=[])
+    with pytest.raises(ValueError, match=r"test split.*data\.test_groups"):
+        run_evaluation(config, tmp_path / "unused.pt", split="test")
+
+
+def test_check_data_skips_empty_split(tennis_root, tmp_path, caplog):
+    config = _config_for(tennis_root, test_groups=[])
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        paths = write_label_overlays(config, tmp_path, count=3)
+    assert "test: no clips, skipped" in caplog.text
+    assert len(paths) == 3
+    assert {p.name.split("_")[0] for p in paths} == {"train", "val"}

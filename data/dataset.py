@@ -16,6 +16,17 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 STRIDES = (1, 3)
 
 
+def _frame_id(path: Path) -> int:
+    """The frame id an image file's name gives: ``0004.jpg`` is frame 4."""
+    try:
+        return int(path.stem)
+    except ValueError as e:
+        raise ValueError(
+            f"{path}: image file name is not an integer frame id; every image "
+            "in a clip directory must be named after its frame"
+        ) from e
+
+
 class TrackNetDataset(Dataset):
     """Dataset yielding windows of three consecutive frames with their heatmaps.
 
@@ -51,7 +62,7 @@ class TrackNetDataset(Dataset):
         self.label_path = Path(label_path)
         self.labels = load_labels(label_path)
         frame_files = {
-            int(p.stem): p
+            _frame_id(p): p
             for p in self.frames_dir.iterdir()
             if p.suffix.lower() in IMAGE_EXTS
         }

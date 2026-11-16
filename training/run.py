@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import cast
 
@@ -41,11 +42,17 @@ def load_config(path: str | Path) -> dict:
         return yaml.safe_load(f)
 
 
-def _build_datasets(config: dict, splits: Sequence[str]) -> dict[str, ConcatDataset]:
+def _build_datasets(
+    config: dict, splits: Sequence[str], skip_empty: bool = False
+) -> dict[str, ConcatDataset]:
     """Datasets for the named splits ("train", "val", "test") of ``config["data"]``.
 
     Train uses ``train_stride`` and flip + colour-jitter augmentation; val and
-    test use stride 3 and no augmentation.
+    test use stride 3 and no augmentation. With ``skip_empty``, a split with no
+    clips is logged and left out of the result.
+
+    Raises:
+        ValueError: If a split has no clips and ``skip_empty`` is false.
     """
     data = config["data"]
     if data["format"] != "tennis":
@@ -58,6 +65,14 @@ def _build_datasets(config: dict, splits: Sequence[str]) -> dict[str, ConcatData
     width, height = config["input_size"]
     datasets = {}
     for split in splits:
+        if not clips[split]:  # only val or test: split_clips never leaves train empty
+            if skip_empty:
+                logger.info("%s: no clips, skipped", split)
+                continue
+            raise ValueError(
+                f"the {split} split has no clips: name at least one group in "
+                f"data.{split}_groups"
+            )
         if split == "train":
             stride = config["train_stride"]
             transform = Compose([HorizontalFlip(), FrameColorJitter()])
@@ -216,27 +231,42 @@ def write_label_overlays(
     ``<split>_<game>_<clip>_<frame>.png``.
 
     Logs, per split, the clip count, the frame count, how many label rows
-    hold each raw visibility value and how many visible labels lie outside
-    the source frame.
+    hold each raw visibility value, how many visible labels lie outside
+    the source frame, how many clips have non-consecutive frame ids (with a
+    warning for each) and the distinct source frame sizes. A split with no
+    clips is skipped with a log line.
 
     Returns:
         The written paths: train first, then val, then test, each in clip and
         frame order.
     """
     candidates: dict[str, list[tuple[TrackNetDataset, int]]] = {}
-    for split, dataset in _build_datasets(config, SPLITS).items():
+    for split, dataset in _build_datasets(config, SPLITS, skip_empty=True).items():
         clips = [cast(TrackNetDataset, d) for d in dataset.datasets]
         visibility: Counter[int] = Counter()
         for clip in clips:
             visibility.update(visibility_counts(clip.label_path))
+        gapped = 0
+        for clip in clips:
+            gap = _first_frame_gap(clip)
+            if gap is not None:
+                gapped += 1
+                logger.warning(
+                    "%s: frame ids are not consecutive: they jump from %d to %d",
+                    clip.frames_dir,
+                    *gap,
+                )
         logger.info(
             "%s: %d clips, %d frames, visibility %s, "
-            "%d visible labels outside the frame",
+            "%d visible labels outside the frame, "
+            "%d clips with non-consecutive frame ids, source sizes %s",
             split,
             len(clips),
             sum(clip.num_frames for clip in clips),
             dict(sorted(visibility.items())),
             sum(_outside_frame(clip, label) for clip in clips for label in clip.labels),
+            gapped,
+            ", ".join(f"{w}x{h}" for w, h in sorted({c.source_size for c in clips})),
         )
         candidates[split] = [
             (clip, i)
@@ -277,6 +307,13 @@ def _round_robin_shares(total: int, capacities: dict[str, int]) -> dict[str, int
                 shares[key] += 1
                 total -= 1
     return shares
+
+
+def _first_frame_gap(clip: TrackNetDataset) -> tuple[int, int] | None:
+    """The first pair of successive frame ids in ``clip`` that differ by more
+    than one, or None if they are consecutive."""
+    frames = [label.frame for label in clip.labels]  # sorted by load_labels
+    return next(((a, b) for a, b in pairwise(frames) if b - a > 1), None)
 
 
 def _outside_frame(clip: TrackNetDataset, label: Label) -> bool:

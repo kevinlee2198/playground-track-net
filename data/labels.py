@@ -107,9 +107,10 @@ def _detect_columns(
 
 
 def _parse_coord(value: str | None) -> float | None:
-    """Return the coordinate as a float, or None if it is empty, NaN or non-numeric."""
+    """Return the coordinate as a float, or None if it is empty, NaN, infinite
+    or non-numeric."""
     try:
         coord = float(value or "")
     except ValueError:
         return None
-    return None if math.isnan(coord) else coord
+    return coord if math.isfinite(coord) else None

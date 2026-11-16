@@ -215,6 +215,15 @@ class TestLoadLabels:
         )
         self._assert_load_fails(path, match="coordinates")
 
+    @pytest.mark.parametrize("coord", ["inf", "-inf"])
+    def test_visible_row_with_infinite_coordinate_raises(self, tmp_path, coord):
+        path = self._write_csv(
+            tmp_path / "Label.csv",
+            ["file name", "visibility", "x-coordinate", "y-coordinate", "status"],
+            [("0000.jpg", 1, 640, 360, 0), ("0001.jpg", 1, coord, 355, 0)],
+        )
+        self._assert_load_fails(path, match="coordinates")
+
     def test_duplicate_frame_raises(self, tmp_path):
         path = self._write_csv(
             tmp_path / "labels.csv",
@@ -329,6 +338,12 @@ class TestTrackNetDataset:
         clip = tennis_root / "game1" / "Clip1"
         (clip / "0005.jpg").unlink()
         with pytest.raises(ValueError, match="Clip1"):
+            TrackNetDataset(clip, clip / "Label.csv")
+
+    def test_image_with_non_integer_name_raises_naming_it(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        cv2.imwrite(str(clip / "cover.jpg"), np.zeros((720, 1280, 3), np.uint8))
+        with pytest.raises(ValueError, match="cover.jpg"):
             TrackNetDataset(clip, clip / "Label.csv")
 
 
