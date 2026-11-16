@@ -85,8 +85,7 @@ def _build_datasets(
     horizontal flip first when ``horizontal_flip`` is set; val and test use
     stride 3 and no augmentation. With ``background_frame``, every split's
     windows carry the clip's median background as a fourth image. With
-    ``skip_empty``, a split with no
-    clips is logged and left out of the result.
+    ``skip_empty``, a split with no clips is logged and left out of the result.
 
     Raises:
         ValueError: If a split has no clips and ``skip_empty`` is false.

@@ -113,7 +113,7 @@ class TrackNetDataset(Dataset):
         frame_tensors = []
         heatmap_list = []
         for fi in frame_indices:
-            frame_tensors.append(self._read_frame(fi))
+            frame_tensors.append(_to_tensor(self._read_rgb(fi)))
 
             label = self.labels[fi]
             heatmap_list.append(
@@ -149,10 +149,6 @@ class TrackNetDataset(Dataset):
         if img.shape[:2] != (self.height, self.width):
             img = cv2.resize(img, (self.width, self.height))
         return img
-
-    def _read_frame(self, fi: int) -> torch.Tensor:
-        """Read a single frame from disk and return a (C, H, W) float32 tensor."""
-        return _to_tensor(self._read_rgb(fi))
 
 
 def _to_tensor(img: np.ndarray) -> torch.Tensor:
