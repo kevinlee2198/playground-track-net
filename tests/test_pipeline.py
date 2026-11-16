@@ -330,10 +330,8 @@ def test_resume_refuses_to_overwrite_another_experiments_checkpoint(
     run_training(config("a", epochs=1, max_steps=2))
     run_training(config("b", epochs=1, max_steps=2))
     checkpoints = tmp_path / "checkpoints"
-    latest_a, latest_b = (
-        checkpoints / "a" / "latest.pt",
-        checkpoints / "b" / "latest.pt",
-    )
+    latest_a = checkpoints / "a" / "latest.pt"
+    latest_b = checkpoints / "b" / "latest.pt"
     before = latest_b.read_bytes()
 
     with pytest.raises(FileExistsError) as err:
