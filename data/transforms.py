@@ -33,7 +33,9 @@ class FrameColorJitter:
     model could mistake for motion.
 
     A window is jittered with probability ``p`` and otherwise returned
-    unchanged. With ``p`` 1.0 no random number is drawn for that decision.
+    unchanged. With ``p`` 1.0 no random number is drawn for that decision;
+    otherwise one number is drawn first, and a window it skips draws nothing
+    more.
 
     Raises:
         ValueError: If ``p`` is outside [0, 1].

@@ -677,7 +677,7 @@ class TestFrameColorJitter:
 
     @pytest.mark.parametrize("p", [1.5, -0.1])
     def test_p_outside_unit_interval_raises(self, p):
-        with pytest.raises(ValueError, match="p"):
+        with pytest.raises(ValueError, match=r"p must be in \[0, 1\]"):
             FrameColorJitter(p=p)
 
     def test_keeps_its_strengths_and_p(self):
