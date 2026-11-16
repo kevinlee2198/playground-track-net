@@ -1,6 +1,22 @@
 import torch
 
 
+def source_to_model(coord: float, source_size: int, model_size: int) -> float:
+    """Map a source-video pixel coordinate onto a frame resized to ``model_size``.
+
+    Pixel index ``i`` covers ``[i, i + 1)`` with its centre at ``i + 0.5``, which
+    is how ``cv2.resize`` maps pixels, so the result lands on the ball as the
+    resized frame shows it. Apply per axis: widths for x, heights for y.
+    """
+    return (coord + 0.5) * (model_size / source_size) - 0.5
+
+
+def model_to_source(coord: float, model_size: int, source_size: int) -> float:
+    """The inverse of ``source_to_model``: a model-resolution coordinate in
+    source-video pixels."""
+    return (coord + 0.5) * (source_size / model_size) - 0.5
+
+
 def generate_heatmap(
     x: float,
     y: float,

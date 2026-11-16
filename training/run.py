@@ -22,6 +22,7 @@ from data import (
     TrackNetDataset,
     build_dataset,
     discover_tennis_clips,
+    source_to_model,
     split_clips,
     visibility_counts,
 )
@@ -287,9 +288,9 @@ def _label_overlay(clip: TrackNetDataset, i: int) -> np.ndarray:
             source_width,
             source_height,
         )
-    # The same rescaling TrackNetDataset applies to its heatmap targets.
-    x = label.x * width / source_width
-    y = label.y * height / source_height
+    # The same mapping TrackNetDataset applies to its heatmap targets.
+    x = source_to_model(label.x, source_width, width)
+    y = source_to_model(label.y, source_height, height)
     cx, cy = round(x), round(y)
     # Crop origin in padded coordinates; clamped so the crop stays inside the
     # padded frame when the label lies beyond its edge.

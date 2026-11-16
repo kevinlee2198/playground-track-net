@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from data.heatmap import generate_heatmap
+from data.heatmap import generate_heatmap, source_to_model
 from data.labels import load_labels
 
 FRAMES_PER_SAMPLE = 3
@@ -20,8 +20,9 @@ class TrackNetDataset(Dataset):
     """Dataset yielding windows of three consecutive frames with their heatmaps.
 
     Frame files are joined to labels by integer file stem (``0004.jpg`` is frame 4).
-    Label coordinates are in source-video pixels and are rescaled to
-    ``width`` x ``height``; the source size is read from the first frame.
+    Label coordinates are in source-video pixels and are mapped to
+    ``width`` x ``height`` with ``source_to_model``; the source size is read
+    from the first frame.
 
     Windows start every ``stride`` frames and never run past the end of the clip,
     so trailing frames that do not fill a window are dropped. A clip shorter than
@@ -70,8 +71,6 @@ class TrackNetDataset(Dataset):
 
         source_height, source_width = self._imread(0).shape[:2]
         self.source_size: tuple[int, int] = (source_width, source_height)
-        self._scale_x = width / source_width
-        self._scale_y = height / source_height
 
         last_start = max(self.num_frames - FRAMES_PER_SAMPLE + 1, 1)
         self.window_starts = list(range(0, last_start, stride))
@@ -86,6 +85,7 @@ class TrackNetDataset(Dataset):
             min(start + offset, last) for offset in range(FRAMES_PER_SAMPLE)
         ]
 
+        source_width, source_height = self.source_size
         frame_tensors = []
         heatmap_list = []
         for fi in frame_indices:
@@ -94,8 +94,8 @@ class TrackNetDataset(Dataset):
             label = self.labels[fi]
             heatmap_list.append(
                 generate_heatmap(
-                    x=label.x * self._scale_x,
-                    y=label.y * self._scale_y,
+                    x=source_to_model(label.x, source_width, self.width),
+                    y=source_to_model(label.y, source_height, self.height),
                     visibility=int(label.visible),
                     height=self.height,
                     width=self.width,

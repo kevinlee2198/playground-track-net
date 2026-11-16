@@ -92,12 +92,20 @@ class TestHeatmapToCoordinates:
         result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
         assert result is not None
         x, y, confidence = result
-        # Centroid should be near (256, 144), scaled to original resolution
-        expected_x = 256 * (1280 / 512)
-        expected_y = 144 * (720 / 288)
+        # Centroid (256, 144) in source pixels: (256 + 0.5) * 1280 / 512 - 0.5, ...
+        expected_x = 640.75
+        expected_y = 360.75
         assert abs(x - expected_x) < 5.0
         assert abs(y - expected_y) < 5.0
         assert confidence > 0.5
+
+    def test_centroid_mapped_through_pixel_centres(self):
+        """A blob symmetric about model pixel (256, 144) maps to (640.75, 360.75)."""
+        heatmap = np.zeros((288, 512), dtype=np.float32)
+        heatmap[143:146, 255:258] = 1.0
+        result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
+        assert result is not None
+        assert result[:2] == (640.75, 360.75)
 
     def test_no_ball(self):
         """Return None when heatmap is below threshold."""
@@ -115,8 +123,8 @@ class TestHeatmapToCoordinates:
         result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
         assert result is not None
         x, y, _ = result
-        expected_x = 300 * (1280 / 512)
-        expected_y = 200 * (720 / 288)
+        expected_x = 750.75  # (300 + 0.5) * 1280 / 512 - 0.5
+        expected_y = 500.75  # (200 + 0.5) * 720 / 288 - 0.5
         assert abs(x - expected_x) < 10.0
         assert abs(y - expected_y) < 10.0
 

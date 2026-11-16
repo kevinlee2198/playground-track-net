@@ -156,6 +156,8 @@ def test_label_overlays_show_only_visible_frames(tennis_root, tmp_path):
 def test_label_overlay_marker_at_rescaled_position(tennis_root, tmp_path):
     write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
     # Frame 0000 is labelled at (640, 360) on a 1280x720 frame and is uniform black.
+    # That maps to (255.7, 143.7) at 512x288, so the frame marker is centred on
+    # the nearest pixel (256, 144).
     img = cv2.imread(str(tmp_path / "test_game3_Clip1_0000.png"))
     assert img is not None
     frame = img[:, :512]
@@ -164,6 +166,13 @@ def test_label_overlay_marker_at_rescaled_position(tennis_root, tmp_path):
     for x, y in ((cx + 6, cy), (cx - 6, cy), (cx, cy + 6), (cx, cy - 6)):
         assert frame[y, x].max() > 0, (x, y)
     assert frame[cy, cx + 12].max() == 0  # nothing drawn outside the circle
+    # The enlarged crop keeps the sub-pixel offset: the crop starts at model
+    # pixel 256 - 32, so the label sits at (31.7 * 4 + 1.5) = 128.3 -> 128.
+    enlarged = img[:256, 512:]
+    ex = ey = 128
+    assert enlarged[ey, ex].max() == 0
+    for x, y in ((ex + 24, ey), (ex - 24, ey), (ex, ey + 24), (ex, ey - 24)):
+        assert enlarged[y, x].max() > 0, (x, y)
 
 
 def _move_test_label(tennis_root, x, y):

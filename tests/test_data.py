@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from data.dataset import TrackNetDataset
-from data.heatmap import generate_heatmap
+from data.heatmap import generate_heatmap, model_to_source, source_to_model
 from data.labels import load_labels, visibility_counts
 from data.sources import build_dataset, discover_tennis_clips, split_clips
 from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
@@ -78,6 +78,77 @@ class TestGenerateHeatmap:
 
     def test_label_outside_frame_gives_empty_target(self):
         assert generate_heatmap(x=-50.0, y=10.0, visibility=1).sum() == 0
+
+
+class TestCoordinateMapping:
+    @pytest.mark.parametrize(
+        ("model_size", "source_size"), [(512, 1280), (288, 720), (128, 1280)]
+    )
+    def test_model_to_source_to_model_is_identity(self, model_size, source_size):
+        for x in (-3.25, 0.0, 0.5, 17.3, 255.7, model_size - 1.0):
+            src = model_to_source(x, model_size, source_size)
+            assert abs(source_to_model(src, source_size, model_size) - x) < 1e-9
+
+    def test_pixel_centres_map_onto_pixel_centres(self):
+        # The centre of the frame is the centre of the frame at any resolution.
+        assert source_to_model(639.5, 1280, 512) == pytest.approx(255.5)
+        assert model_to_source(255.5, 512, 1280) == pytest.approx(639.5)
+
+
+def _intensity_centroid(image: torch.Tensor) -> tuple[float, float]:
+    """(x, y) centroid of a (C, H, W) image weighted by its summed intensity."""
+    weight = image.sum(dim=0).double()
+    ys = torch.arange(weight.shape[0], dtype=torch.float64).unsqueeze(1)
+    xs = torch.arange(weight.shape[1], dtype=torch.float64).unsqueeze(0)
+    total = weight.sum()
+    return (
+        float((weight * xs).sum() / total),
+        float((weight * ys).sum() / total),
+    )
+
+
+class TestTargetAlignsWithResizedBall:
+    """The heatmap target must sit on the ball as the resized frame shows it."""
+
+    SOURCE_BALL = (640, 360)  # pixel of a 1280x720 frame the disc is centred on
+
+    @pytest.fixture
+    def disc_clip(self, tmp_path: Path) -> tuple[Path, Path]:
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        img = np.zeros((720, 1280, 3), dtype=np.uint8)
+        cv2.circle(img, self.SOURCE_BALL, 6, (255, 255, 255), -1)
+        cv2.imwrite(str(frames_dir / "0000.png"), img)  # lossless
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            writer.writerow([0, 1, *self.SOURCE_BALL])
+        return frames_dir, csv_path
+
+    def _mapped_label(self) -> tuple[float, float]:
+        x, y = self.SOURCE_BALL
+        return source_to_model(x, 1280, 512), source_to_model(y, 720, 288)
+
+    def test_target_centred_on_resized_ball(self, disc_clip):
+        frames, heatmaps = TrackNetDataset(*disc_clip)[0]
+        x, y = self._mapped_label()
+        ball_x, ball_y = _intensity_centroid(frames[:3])
+        assert abs(ball_x - x) < 0.05 and abs(ball_y - y) < 0.05, (ball_x, ball_y)
+        assert torch.equal(heatmaps[0], generate_heatmap(x, y, visibility=1))
+
+    def test_target_centred_on_resized_ball_after_flip(self, disc_clip):
+        frames, heatmaps = TrackNetDataset(*disc_clip, transform=HorizontalFlip(p=1.0))[
+            0
+        ]
+        x, y = self._mapped_label()
+        ball_x, ball_y = _intensity_centroid(frames[:3])
+        assert abs(ball_x - (511 - x)) < 0.05 and abs(ball_y - y) < 0.05, (
+            ball_x,
+            ball_y,
+        )
+        flipped = generate_heatmap(x, y, visibility=1).flip(-1)
+        assert torch.equal(heatmaps[0], flipped)
 
 
 # ---------------------------------------------------------------------------
@@ -209,17 +280,20 @@ class TestTrackNetDataset:
         assert ds.source_size == (1280, 720)
         _, heatmaps = ds[0]
         ys, xs = torch.where(heatmaps[0] > 0)
-        assert abs(xs.float().mean().item() - 256.0) <= 0.5  # 640 * 512 / 1280
-        assert abs(ys.float().mean().item() - 144.0) <= 0.5  # 360 * 288 / 720
-        assert heatmaps[0].sum() == 21
+        # (640 + 0.5) * 512 / 1280 - 0.5 = 255.7; (360 + 0.5) * 288 / 720 - 0.5 = 143.7.
+        # The 20-pixel disc drawn there has its centroid at (255.75, 143.75).
+        assert abs(xs.float().mean().item() - 255.7) <= 0.1
+        assert abs(ys.float().mean().item() - 143.7) <= 0.1
+        assert heatmaps[0].sum() == 20  # radius 2.5 at offset (0.7, 0.7) covers 20 px
 
     def test_occluded_and_invisible_frames_have_empty_targets(self, tennis_root):
         clip = tennis_root / "game1" / "Clip1"
         _, heatmaps = TrackNetDataset(clip, clip / "Label.csv")[1]  # frames 3, 4, 5
+        # Frame 5 at (690, 335) maps to (275.7, 133.7): a 20-pixel disc.
         assert (
             heatmaps[0].sum() == 0
             and heatmaps[1].sum() == 0
-            and heatmaps[2].sum() == 21
+            and heatmaps[2].sum() == 20
         )
 
     def test_stride_1_window_count_and_overlap(self, tennis_root):
