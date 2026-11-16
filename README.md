@@ -82,7 +82,7 @@ playground-track-net/
     test_data.py        # Labels, clip discovery, dataset, background frame, heatmap, transforms (107 tests)
     test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (66 tests)
     test_inference.py   # Postprocess, tracker, video preprocess (30 tests)
-    test_pipeline.py    # End to end: train, evaluate, check-data, infer (50 tests)
+    test_pipeline.py    # End to end: train, evaluate, check-data, infer (52 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
@@ -105,10 +105,10 @@ playground-track-net/
 | Mixup (`mixup_alpha`) and colour-jitter settings (`color_jitter`) | Done; not yet trained on real data | covered in `test_data.py`, `test_training.py`, `test_pipeline.py` |
 | Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; one full 30-epoch run | 66 in `test_training.py` |
 | Inference (postprocess, Kalman tracker, video I/O) | Done; run on one real clip | 30 in `test_inference.py` |
-| CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 50 in `test_pipeline.py` |
+| CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 52 in `test_pipeline.py` |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 362 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 364 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 

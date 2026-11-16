@@ -364,6 +364,20 @@ def test_resume_from_missing_file_says_so(tennis_root, tmp_path, existing_run):
     assert not (tmp_path / "runs").exists()
 
 
+def test_resume_from_directory_says_so(tennis_root, tmp_path):
+    config = _fast_training_config(tennis_root, tmp_path)
+    checkpoints = tmp_path / "checkpoints"
+    run_dir = checkpoints / "e2e"
+    run_dir.mkdir(parents=True)
+    with pytest.raises(IsADirectoryError) as err:
+        run_training(config, resume=run_dir)
+    assert str(err.value) == (
+        f"resume checkpoint {run_dir} is a directory, not a checkpoint file"
+    )
+    assert list(checkpoints.rglob("*")) == [run_dir]  # nothing created
+    assert not (tmp_path / "runs").exists()
+
+
 def test_resume_from_own_best_refuses_to_replace_latest(tennis_root, tmp_path):
     config = _fast_training_config(tennis_root, tmp_path)
     latest = tmp_path / "checkpoints" / "e2e" / "latest.pt"
@@ -422,6 +436,38 @@ def test_resume_refuses_to_overwrite_another_experiments_checkpoint(
     )
     checkpoint = torch.load(latest_a, weights_only=True)
     assert (checkpoint["epoch"], checkpoint["global_step"]) == (3, 6)
+
+
+class _PassedTheGuard(Exception):
+    """Raised by a stubbed dataset build: run_training got past its resume guard."""
+
+
+def test_resume_through_symlinked_checkpoint_directory(
+    tennis_root, tmp_path, monkeypatch
+):
+    # The layout real runs use: a git worktree whose checkpoints directory is a
+    # symlink to the main checkout's.
+    real = tmp_path / "main" / "checkpoints"
+    real.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "checkpoints").symlink_to(real, target_is_directory=True)
+    monkeypatch.chdir(worktree)
+    config = _fast_training_config(
+        tennis_root, tmp_path, checkpoint_dir="checkpoints", epochs=1, max_steps=2
+    )
+    run_training(config)
+    assert (real / "e2e" / "latest.pt").is_file()
+
+    def passed_the_guard(config, splits):
+        raise _PassedTheGuard
+
+    monkeypatch.setattr("training.run._build_datasets", passed_the_guard)
+    for resume in (Path("checkpoints/e2e/latest.pt"), real / "e2e" / "latest.pt"):
+        with pytest.raises(_PassedTheGuard):
+            run_training(config, resume=resume)
+    with pytest.raises(FileExistsError, match="--resume"):
+        run_training(config)
 
 
 def _warnings_for(caplog, stored: dict, current: dict) -> list[str]:

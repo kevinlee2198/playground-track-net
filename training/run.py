@@ -145,15 +145,20 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
     checkpoint. With ``resume``, training continues from that checkpoint.
 
     Raises:
-        FileNotFoundError: If ``resume`` is given but is not a file.
+        FileNotFoundError: If ``resume`` is given but does not exist.
+        IsADirectoryError: If ``resume`` is given but is a directory.
         FileExistsError: If this experiment already has a ``latest.pt`` and
             ``resume`` is not that same file (paths compared after resolving
             symlinks): a fresh run, or one resumed from another checkpoint,
             would overwrite it. This includes another checkpoint of this
             experiment, such as its ``best.pt``.
-        Both are checked before anything is built or written.
+        All are checked before anything is built or written.
     """
     if resume is not None and not Path(resume).is_file():
+        if Path(resume).is_dir():
+            raise IsADirectoryError(
+                f"resume checkpoint {resume} is a directory, not a checkpoint file"
+            )
         raise FileNotFoundError(f"resume checkpoint {resume} does not exist")
     latest = Path(experiment_dir(config, "checkpoint_dir")) / "latest.pt"
     if latest.exists():
