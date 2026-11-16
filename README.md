@@ -109,7 +109,7 @@ Details, file references and the measured preflight numbers are in [docs/2026-11
 
 **Open before the full run:**
 
-- **Where it runs.** 30 epochs are estimated at about 6.1 hours on the RTX 3070 Laptop (8 GB) without `torch.compile`, extrapolated from one measured epoch.
+- **Where it runs.** 30 epochs would take about 6.1 hours on the RTX 3070 Laptop (8 GB) without `torch.compile`, extrapolated from one measured epoch.
 - **Batch size and learning rate.** Batch 2 (the default) peaks at 1,769 MiB and ran at 8.6–8.7 steps per second through the full epoch. Batch 8 ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10; we use AdamW at 1e-4 with batch 2.
 - **`torch.compile`** needs a C compiler, which this machine lacks, so `configs/default.yaml` sets `compile_model: false` and the speed-up is unmeasured. With it set to true on a CUDA machine without a compiler, `train` stops at startup and says how to fix it.
 - **Mixup** is implemented but not wired in. **Median background frame** input is the planned first experiment after a baseline. **Colour jitter strength** (0.3 brightness, contrast and saturation, always applied) is stronger than WASB's (0.1 at p = 0.5) and untuned.
@@ -161,8 +161,8 @@ uv run python main.py train --config configs/default.yaml
 uv run python main.py train --config configs/default.yaml \
   --resume checkpoints/tennis_v2_baseline/latest.pt
 
-# Evaluate a checkpoint; prints JSON with both protocols. --split defaults to test:
-# pass --split val until the model is final, and keep the test split for the final evaluation.
+# Evaluate a checkpoint; prints JSON with both protocols. --split defaults to test,
+# so pass --split val until the model is final.
 uv run python main.py evaluate --config configs/default.yaml \
   --weights checkpoints/tennis_v2_baseline/latest.pt --split val
 ```
@@ -175,7 +175,7 @@ uv run python main.py evaluate --config configs/default.yaml \
   - `model_res_4px`: 4 px at 512x288 (TrackNetV3/V4 and RacketVision).
   - `source_res_4px`: 4 px at source resolution (WASB), which is 1.6 px at 512x288 for 1280-wide video.
   - `recall` counts a detection too far from the ball against precision only (TrackNetV3, V4, WASB); `recall_strict` also counts it as a miss (RacketVision).
-- **Label coordinates** are mapped to 512x288 through pixel centres, `x_model = (x_src + 0.5) * 512 / width - 0.5` (and the same for y), the way `cv2.resize` maps pixels; inference maps back with the inverse. This is a deliberate departure from the published code (TrackNetV3 scales by the plain `x * scale` ratio): with `cv2.resize`, plain scaling leaves the target 0.3 px off the ball at 1280→512, and horizontal flip reverses that offset on half the samples. The pixel-centre mapping avoids both.
+- **Label coordinates** are mapped to 512x288 through pixel centres, `x_model = (x_src + 0.5) * 512 / width - 0.5` (and the same for y), the way `cv2.resize` maps pixels; inference maps back with the inverse. This is a deliberate departure from the published code (TrackNetV3 scales by plain `x * scale`): with `cv2.resize`, plain scaling leaves the target 0.3 px off the ball at 1280→512, and horizontal flip reverses that offset on half the samples. The pixel-centre mapping avoids both.
 - **Tennis visibility 3** rows carry coordinates in the real files but are treated as ball-absent, as in WASB's config.
 
 ### Use the model from Python

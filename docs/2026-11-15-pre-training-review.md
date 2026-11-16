@@ -187,7 +187,7 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 
 **Open:**
 
-1. **Where training runs.** The local GPU is an RTX 3070 Laptop with 8 GB: enough for V2, limiting for batch size and multi-sport pre-training. A 30-epoch run is estimated at about 6.1 hours here without `torch.compile`, extrapolated from one measured epoch (§4.4). Measured peak memory for V2 training at batch 2: 1,769 MiB; an earlier single-step measurement gave about 1.9 GB for V5.
+1. **Where training runs.** The local GPU is an RTX 3070 Laptop with 8 GB: enough for V2, limiting for batch size and multi-sport pre-training. A 30-epoch run would take about 6.1 hours here without `torch.compile`, extrapolated from one measured epoch (§4.4). Measured peak memory for V2 training at batch 2: 1,769 MiB; an earlier single-step measurement gave about 1.9 GB for V5.
 2. **Commercial intent.** If the iOS product is the goal, RacketVision, BlurBall and the ETH set need licence confirmation before entering the training mix.
 3. **On-device model.** The April recommendation to swap to WASB is not settled. A fair bake-off has three candidates: V2 with background frame, WASB-HRNet, and a width-scaled MBConv U-Net in the style of NYCU's Lite model.
 4. **Pickleball data.** Requires our own recordings. If we annotate, label the centre of the blur streak, which BlurBall reports is worth +0.4 to +1.5 F1 across models.
