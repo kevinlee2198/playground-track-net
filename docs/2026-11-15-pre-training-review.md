@@ -80,7 +80,7 @@ The spec's "PixelShuffle(4)" note is a misreading: the SDK uses PixelShuffle(16)
 
 Batch size 2 traces back to the Keras setup of TrackNetV2/V4. With GroupNorm it affects only gradient noise.
 
-The "Ours" column is the code as reviewed. Heatmap radius, training stride, colour jitter, far-detection counting and tolerance space have since changed (§4.2); mixup, background frame, optimiser and post-processing have not.
+The "Ours" column is the code as reviewed. Heatmap radius, training stride, colour jitter, far-detection counting and tolerance space have since changed (§4.2); mixup, background frame, optimiser and post-processing have not. *Update, 2026-11-16:* mixup (`mixup_alpha`), the background frame (`background_frame`) and the optimiser (`optimizer`) are now config settings (§5).
 
 ## 4. Code readiness
 

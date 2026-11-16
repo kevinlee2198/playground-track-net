@@ -122,13 +122,13 @@ Runs `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml) and `tennis_v2_jitter` (co
 **Mixup.** `mixup_alpha: 0.5` mixes each training batch before the forward pass; validation is not mixed. Each sample draws a weight `lam` from Beta(0.5, 0.5), keeps `max(lam, 1 - lam)`, and is blended with a partner chosen by one random permutation of the batch, frames and heatmaps alike. This is TrackNetV3's sample mixup; their ablation reports +0.29 F1 from it ([pre-training review](2026-11-15-pre-training-review.md) §3.3). Two things are known before training:
 
 - With batch size 2, the permutation leaves the batch as it is half the time, so about half the batches are not mixed.
-- The mixed heatmaps are soft targets: at a sample's own ball the target is `lam`, between 0.5 and 1. This loss's per-pixel optimum for a soft target is pulled towards 0.5: a target of 0.75 is best fit by a prediction of 0.60. TrackNetV3 trains with the same loss and the same behaviour.
+- The mixed heatmaps are soft targets: at a sample's own ball the target is `lam`, between 0.5 and 1. This loss's per-pixel optimum for a soft target is pulled towards 0.5: a target of 0.75 is best fit by a prediction of 0.60. TrackNetV3 trains with the same loss formula (`WBCELoss` in its `utils/metric.py`), so its mixup has the same property.
 
 **Colour-jitter strength.** `tennis_v2_jitter` uses WASB's strength, 0.1 brightness, contrast and saturation applied to half the windows (`p: 0.5`), against ours: 0.3, applied to every window. Either way one draw covers every image in a window.
 
 ## 7. Small things noticed
 
-- The training loss is logged with four decimals and reads `0.0000` from epoch 5 on. Fixed: it is now logged in scientific notation.
+- The training loss is logged with four decimals and reads `0.0000` from epoch 5 on (the epoch mean is 5.0e-5 at epoch 5 and 2.4e-5 at epoch 30). Fixed: it is now logged in scientific notation.
 - `evaluate` builds its ground-truth position from the centroid of the target disc rather than from the label, which moves a few frames across the 1.6 px line (1,107 true positives against 1,099 when scored on label coordinates).
 - Resuming a checkpoint made before `horizontal_flip` existed warns `horizontal_flip: None -> True`, although that run did flip. Fixed: a key the checkpoint predates is compared using the value the code used before the key existed.
 - Resuming a checkpoint made before `background_frame` existed warns `background_frame: None -> False`, although nothing changed. Fixed in the same way.
