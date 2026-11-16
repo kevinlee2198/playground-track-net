@@ -41,6 +41,18 @@ curl -L -c cj -b cj -o Dataset.zip \
 kaggle datasets download sofuskonglevoll/tracknet-tennis
 ```
 
+### Set up for training
+
+`configs/default.yaml` reads the SharePoint copy from `datasets/tennis/<game>/<clip>/` (`data.root: datasets/tennis`). The zip's top-level folder is `Dataset/`, so extract it into `datasets/` and rename it; extracting straight into `datasets/tennis` gives `datasets/tennis/Dataset/game1/…`, and `train` stops with "no clips found". From the repo root, needing only Python (no `unzip`):
+
+```bash
+python3 -m zipfile -e Dataset.zip datasets/
+mv datasets/Dataset datasets/tennis
+ls datasets/tennis/game1/Clip1/0000.jpg   # should list the file
+```
+
+The `Readme.docx` left at `datasets/tennis/` is harmless: clip discovery looks only at directories. Then run `check-data` (see the README) to confirm the counts match the [pre-training review](2026-11-15-pre-training-review.md) §4.4. The Kaggle copy was not downloaded; its layout is unchecked.
+
 ## Badminton — CoachAI shuttlecock dataset (78,200 frames)
 
 | Source | Link |

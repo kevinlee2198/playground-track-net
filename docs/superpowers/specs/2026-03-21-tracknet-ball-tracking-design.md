@@ -241,7 +241,7 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 - `r = 30` pixels for standard resolution (512x288 from 1280x720 native)
 - `r = 40` pixels for higher resolution sources (512x288 from 1920x1080 native)
 - **Revised 2026-11-15: use `r = 2.5` pixels at 512x288.** The values above come from the arXiv TrackNetV5 paper, which has no code or ablation for them. TrackNetV3, V4, WASB and BlurBall all use 2.5 at 512x288; RacketVision uses a Gaussian with sigma 3.5. A 30 px disc is a 60 px-wide blob that must be localised to within 4 px.
-- Label coordinates are in the source video's resolution and must be rescaled to 512x288 before the target is drawn. As implemented, the mapping goes through pixel centres, `x_model = (x_src + 0.5) * (512 / source_width) - 0.5`, the way `cv2.resize` maps pixels, and inference applies the inverse (`data/heatmap.py`). The published TrackNet code scales by `x * scale`, which at 1280→512 leaves the target 0.3 px off the ball.
+- Label coordinates are in the source video's resolution and must be rescaled to 512x288 before the target is drawn. As implemented, the mapping goes through pixel centres, `x_model = (x_src + 0.5) * (512 / source_width) - 0.5`, the way `cv2.resize` maps pixels, and inference applies the inverse (`data/heatmap.py`). This is a deliberate departure from the published TrackNet code (TrackNetV3 scales by the plain `w / WIDTH` ratio), which with `cv2.resize` leaves the target 0.3 px off the ball at 1280→512.
 - Visibility classes: 0 = not visible (all-zero heatmap), 1 = visible, 2 = partially occluded (still labeled)
 
 ---
@@ -280,7 +280,7 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 
 ### PyTorch Training Optimizations
 
-- **Mixed precision:** Use `torch.amp.autocast("cuda", dtype=torch.bfloat16)`. bf16 is preferred on Ampere GPUs (RTX 3070) — wider dynamic range than fp16, no GradScaler needed.
+- **Mixed precision:** Use `torch.amp.autocast(device_type, dtype=torch.bfloat16)` (the Trainer passes its device type, so the same code runs on CPU). bf16 is preferred on Ampere GPUs (RTX 3070) — wider dynamic range than fp16, no GradScaler needed.
 - **torch.compile:** Wrap model with `torch.compile(model)` for 1.5-2x speedup. Works well with U-Net (skip connections are standard tensor ops). Use **static input sizes** (512x288) — avoid `dynamic=True`. Revised 2026-11-15: off by default (`compile_model: false`) because the dev machine has no C compiler; the speed-up is unmeasured there.
 - **Gradient checkpointing:** Use `torch.utils.checkpoint.checkpoint(use_reentrant=False)` on encoder blocks to reduce peak VRAM ~60% at ~25% training time cost. Enable for V5's R-STR Transformer on 8GB GPU.
 - **DataLoader:** Use `pin_memory=True`, `num_workers=4`, `persistent_workers=True`.
@@ -372,9 +372,8 @@ class TrackNetDataset(Dataset):
 ### Sliding Window Strategy
 
 - **Stride = 3** (MIMO): Process frames [0,1,2], then [3,4,5], etc. Each sample produces 3 heatmaps. No overlap, no duplicate predictions per frame. This matches the original TrackNet MIMO design.
-- **Revised 2026-11-15:** stride 3 is for inference only. Training windows slide by 1, as in the TrackNetV3, V4, WASB and RacketVision code: three times as many distinct windows, and each frame is seen in every slot.
-- At video boundaries: pad by duplicating the first/last frame (e.g., frame 0 uses [0,0,1], last frame uses [N-2,N-1,N-1])
-- **Revised 2026-11-15 (as implemented):** training and evaluation windows are not padded. Windows never run past the end of a clip, so up to two tail frames per clip are neither trained on with full context nor scored, as in WASB's evaluation. Only a clip shorter than three frames is padded, by repeating its last frame.
+- **Revised 2026-11-15:** stride 3 is for validation, test and inference only. Training windows slide by 1, as in the TrackNetV3, V4, WASB and RacketVision code: three times as many distinct windows, and each frame is seen in every slot.
+- **At clip boundaries (revised 2026-11-15, as implemented):** training, validation and test windows are not padded. They never run past the end of a clip, so up to two tail frames per clip are neither trained on with full context nor scored, as in WASB's evaluation; only a clip shorter than three frames gets one window, padded by repeating its last frame. `infer` pads its last window by repeating the last frame, so every frame gets a prediction. The original design's padding at both ends (frame 0 as [0,0,1], the last frame as [N-2,N-1,N-1]) is not implemented.
 
 ### Video Loading Strategy
 

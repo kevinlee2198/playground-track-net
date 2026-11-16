@@ -155,7 +155,7 @@ Batch 8 is not usable on this GPU as configured; batch 4 was not tried. After 30
 
 This is a sanity check that the model learns, not a result: one epoch of thirty, validation split only.
 
-**Estimated full run.** 12,167 windows / batch 2 = 6,083 steps per epoch; about 12.2 minutes per epoch including validation; 30 epochs ≈ 6.1 hours on this laptop without `torch.compile`.
+**Estimated full run** (extrapolated from the one epoch above, not measured). 12,167 windows / batch 2 = 6,083 steps per epoch; about 12.2 minutes per epoch including validation; 30 epochs ≈ 6.1 hours on this laptop without `torch.compile`.
 
 **Not measured:** speed with `torch.compile` (needs a C compiler); batch 4; anything on the test split (deliberately untouched).
 
@@ -163,7 +163,7 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 
 | Issue | Fixed |
 |---|---|
-| Targets were drawn at `x * scale`, but `cv2.resize` maps source pixel `x` to `(x + 0.5) * scale - 0.5`, so at 1280→512 the target sat 0.3 px right of and below the ball, and horizontal flip turned that into −0.3 px on half the samples. `source_to_model` / `model_to_source` in `data/heatmap.py` are now the only rescaling arithmetic, used by training targets, inference output and `check-data`. This departs deliberately from the published TrackNet code, which scales by `x * scale` | `ac4d449` |
+| Targets were drawn at `x * scale`, but `cv2.resize` maps source pixel `x` to `(x + 0.5) * scale - 0.5`, so at 1280→512 the target sat 0.3 px right of and below the ball, and horizontal flip turned that into −0.3 px on half the samples. `source_to_model` / `model_to_source` in `data/heatmap.py` are now the only rescaling arithmetic, used by training targets, inference output and `check-data`. This departs deliberately from the published TrackNet code: TrackNetV3's `dataset.py` scales by the plain `w / WIDTH` ratio | `ac4d449` |
 | `latest.pt` was written before `best_f1` was updated, so a resumed run could overwrite `best.pt` with a worse model | `984809c` |
 | A fresh `train` in an experiment that already had `latest.pt` restarted from step 0 and overwrote its checkpoints. It now stops unless `--resume` is given | `c027ef9` |
 | A config value that `weights_only=True` cannot restore (a YAML date, a `Path`) made every checkpoint unloadable; a train set smaller than one batch trained zero steps; `log_every <= 0` crashed. The Trainer now rejects all three at startup. Resuming a checkpoint whose epoch was cut short by `--max-steps`, or with a config that differs from the stored one, now logs a warning | `d7f8dbf` |
@@ -187,11 +187,11 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 
 **Open:**
 
-1. **Where training runs.** The local GPU is an RTX 3070 Laptop with 8 GB: enough for V2, limiting for batch size and multi-sport pre-training. A 30-epoch run takes about 6.1 hours here without `torch.compile` (§4.4). Measured peak memory for V2 training at batch 2: 1,769 MiB; an earlier single-step measurement gave about 1.9 GB for V5.
+1. **Where training runs.** The local GPU is an RTX 3070 Laptop with 8 GB: enough for V2, limiting for batch size and multi-sport pre-training. A 30-epoch run is estimated at about 6.1 hours here without `torch.compile`, extrapolated from one measured epoch (§4.4). Measured peak memory for V2 training at batch 2: 1,769 MiB; an earlier single-step measurement gave about 1.9 GB for V5.
 2. **Commercial intent.** If the iOS product is the goal, RacketVision, BlurBall and the ETH set need licence confirmation before entering the training mix.
 3. **On-device model.** The April recommendation to swap to WASB is not settled. A fair bake-off has three candidates: V2 with background frame, WASB-HRNet, and a width-scaled MBConv U-Net in the style of NYCU's Lite model.
 4. **Pickleball data.** Requires our own recordings. If we annotate, label the centre of the blur streak, which BlurBall reports is worth +0.4 to +1.5 F1 across models.
-5. **Batch size and learning rate.** Batch 2 runs at 8.8–8.9 steps per second and peaks at 1,769 MiB. Batch 8 peaked at 6,656 MiB in training and then ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10 (§3.3).
+5. **Batch size and learning rate.** Batch 2 ran at 8.6–8.7 steps per second through the full epoch (8.8–8.9 after warm-up in the 300-step run) and peaks at 1,769 MiB. Batch 8 peaked at 6,656 MiB in training and then ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10 (§3.3).
 6. **Mixup** is implemented (`data/transforms.py`) but not wired into training. TrackNetV3 reports +0.29 F1 from it.
 7. **Median background frame.** Not in the code. It needs a 12-channel input, and `infer` and `evaluate` must first read the architecture from the checkpoint's config (limitation below).
 8. **Colour jitter strength.** 0.3 brightness, contrast and saturation, always applied: stronger than WASB's (0.1 at p = 0.5). Tuning it is an experiment, not a fix.

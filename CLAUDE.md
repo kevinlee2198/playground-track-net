@@ -19,8 +19,8 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - `uv run pytest tests/test_mdd.py -v` — MDD module tests only
 - `uv run pytest tests/test_pipeline.py -v` — end-to-end train / evaluate / check-data / infer tests only
 - `uv run python main.py check-data --config configs/default.yaml --out <dir> [--count 12]` — log per-split clip, frame and visibility counts; write label-overlay PNGs to `<dir>` (keep it outside the repo)
-- `uv run python main.py train --config configs/default.yaml [--max-steps N] [--resume checkpoints/<experiment_name>/latest.pt]` — train on the train split, validate on val each epoch; writes `checkpoints/<experiment_name>/{latest,best}.pt` and TensorBoard logs in `runs/<experiment_name>/`
-- `uv run python main.py evaluate --config configs/default.yaml --weights <checkpoint.pt> [--split val|test]` — print JSON metrics under both protocols; the default split is test
+- `uv run python main.py train --config configs/default.yaml [--max-steps N] [--resume checkpoints/<experiment_name>/latest.pt]` — train on the train split, validate on val each epoch; writes `checkpoints/<experiment_name>/latest.pt` every epoch, `best.pt` only when validation `f1` beats the best so far (starts at 0, so a run stuck at F1 0 has none), and TensorBoard logs in `runs/<experiment_name>/`. `--max-steps` is a total that counts steps restored by `--resume`, so N must exceed the checkpoint's step
+- `uv run python main.py evaluate --config configs/default.yaml --weights <checkpoint.pt> --split val` — print JSON metrics under both protocols. The default split is test: always pass `--split val` until the model is final
 - `uv run python main.py infer --video <video or frame dir> --model <checkpoint.pt> --output <csv> [--output-video <mp4>] [--threshold 0.5]`
 
 ## Code Style
@@ -51,12 +51,13 @@ Datasets (links, licences, verification log): docs/data-sources.md
 ## Status (2026-11-15)
 - The pipeline has run end to end on the real TrackNet tennis dataset (`datasets/tennis/`, git-ignored, 95 clips). One full epoch of the default recipe trained and validated cleanly. No full training run exists and nothing has been evaluated on the test split. The one-epoch numbers are a sanity check, not a baseline. Measured numbers: review doc §4.4.
 - Splits (configs/default.yaml): train game1–6, val game7, test game8–10. WASB trains on game1–7, so say so beside any comparison. Leave the test split alone until a model is final.
-- Open (review doc §5): where the 30-epoch run happens (about 6.1 h on this laptop), batch size and learning rate (batch 8 runs out of memory at validation here), mixup, median background frame, jitter strength, `torch.compile` speed.
+- Open (review doc §5): where the 30-epoch run happens (estimated 6.1 h on this laptop, from one epoch), batch size and learning rate (batch 8 runs out of memory at validation here; batch 4 untried), mixup, median background frame, jitter strength, `torch.compile` speed.
 - V5 is deferred. The first run is V2 on tennis.
 
 ## Gotchas
-- Input resolution is always 512x288 (static, required for torch.compile)
-- Map label coordinates between source and model resolution only with `source_to_model` / `model_to_source` (data/heatmap.py): `(x + 0.5) * scale - 0.5`, through pixel centres as `cv2.resize` does. Plain `x * scale` (the published TrackNet code) puts the target 0.3 px off the ball at 1280→512
+- Model resolution is 512x288: the default `input_size` and the only resolution trained or measured. `input_size` in the config changes it for train, evaluate and check-data (pipeline tests use 128x72); `infer` always resizes to 512x288. Keep it static for torch.compile
+- Windows are never padded: up to two frames at the end of each clip are neither trained on with full context nor scored (9 frames in val, 35 in test). `infer` pads its last window so every frame gets a prediction
+- Map label coordinates between source and model resolution only with `source_to_model` / `model_to_source` (data/heatmap.py): `(x + 0.5) * scale - 0.5`, through pixel centres as `cv2.resize` does. This deliberately departs from TrackNetV3, whose plain `x * scale` puts the target 0.3 px off the ball at 1280→512
 - Tennis visibility 3 rows carry coordinates but count as ball-absent (`visible_flags=(1, 2)`)
 - Models return sigmoid heatmaps by default; training calls `model(frames, return_logits=True)` and the loss runs in float32 on the logits. Backbone, R-STR head and TrackNet all take `return_logits`
 - Two evaluation protocols: `model_res_4px` (4 px at 512x288) and `source_res_4px` (4 px in source pixels = 1.6 px at 512x288 for 1280-wide video). `evaluate` reports both; per-epoch validation and best.pt selection use `f1` at 4 px, 512x288 only
