@@ -1,7 +1,7 @@
 """Where is the ball in the picture relative to its label? No model involved.
 
-For every second clearly visible frame, crop the source frame (33 px square)
-around the label, remove the background with the median of the six
+For every second frame whose ball is clearly visible, crop the source frame
+(33 px square) around the label, remove the background with the median of the six
 neighbouring frames' crops, threshold the difference at 30 and take the
 difference-weighted centroid of the blob nearest the label. Blobs of fewer
 than 6 or more than 200 pixels, or more than 8 px from the label, are left

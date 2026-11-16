@@ -40,20 +40,20 @@ Measured on `best.pt` with `scripts/analysis/val_errors.py`, against the label c
 - Detection threshold: F1 is flat from 0.4 (0.950) to 0.5 (0.949); 0.3 gives 0.944 and 0.6 gives 0.942. The default 0.5 is fine.
 - Per clip, F1 runs from 0.725 (Clip8, 54 frames) to 0.972 (Clip2). The 900-frame Clip4 scores 0.963.
 
-**What the failures look like.** All 172 failing frames were cropped from the source video, with the frame before and after, and sorted by eye. About four in five were clear-cut; treat the counts as approximate.
+**What the failures look like.** All 172 failing frames were cropped from the source video, with the frame before and after, and sorted by a model looking at the crops, not by a person. About four in five were clear-cut; treat the counts as approximate.
 
 | Failure | Frames | What is there |
 |---|---|---|
 | Detection, label says no ball | 38 | racket or body 17, a ball held or bounced before a serve 10, court line 5, a ball in flight 3, unclear 3 |
 | Detection, label says occluded | 17 | a ball held or bounced 9, racket or body 6, other 2 |
-| Detection over 4 px from the label | 28 | racket or body 22, court line 3, another ball 2, nothing 1 |
+| Detection over 4 px from the label | 28 | racket or body 22, court line 3, a ball-like streak or the ball itself 2, nothing 1 |
 | Miss | 89 | ball at a racket or player 46, plainly visible 13, blur streak 11, faint 8, on a line or the net 7, no ball visible at the label 3, unclear 1 |
 
 - **Rackets and players are the main problem, in both directions.** 45 of the 83 wrong detections are on a racket, hand, shoe or shorts, most often the yellow-green strings, and 46 of the 89 misses are balls touching a racket or player.
 - **The labels are inconsistent around serves.** A ball in the server's hand or on the strings is marked visible in some clips and absent or occluded in others. Roughly 30–40 of the 172 failures, counting both directions, come from this and are out of any model's reach.
-- **Static structures are a small share:** 8 detections on court lines, all but a few from Clip7, which is blurrier than the rest.
-- **13 misses are plain balls in the open** with a heatmap peak just under the threshold.
-- **A minimum blob size does not help.** Dropping detections under 5 px removes 12 wrong detections and 12 correct ones (F1 0.947, from 0.949); every larger cut-off is worse.
+- **Static structures are a small share:** 8 detections on court lines, all but one from Clip7, which is blurrier than the rest.
+- **13 misses are plain balls in the open,** with heatmap peaks of 0.1–0.5.
+- **No minimum blob size helps.** Dropping detections under 5 px removes 12 wrong detections and 12 correct ones (F1 0.946, from 0.949), and no other cut-off does better.
 
 **Localisation.** This is where the two protocols part: 98.3% of detections on a visible ball are within 4 px of the label, but only 67.8% are within 1.6 px.
 
@@ -73,10 +73,10 @@ Four measurements. The first three are on the baseline's `best.pt`; 1, 2 and 4 u
 
 1. **The offset exists only on the validation game.** On un-augmented training clips (every 12th window of game1–6, 1,044 detections) the mean horizontal error is +0.14 px.
 2. **Mirroring the validation frames removes it.** With the input flipped left to right, and the labels flipped to match, the mean horizontal error on game7 is +0.08 px instead of −1.07 (every 2nd window, about 800 detections). On the training games mirroring changes little (+0.06).
-3. **The labels are not on the ball, in any of game1–7.** Without any model: crop the source frame around each label, remove the background with the median of the six neighbouring frames, and take the centroid of the moving blob. For a still ball at the centre of the frame, the blob is 1.3–1.7 px left of and 1.0–1.7 px above the label in each of the seven games (game7: −1.50, −1.32 source px). At 512x288 that is about 0.6 px. Two smaller effects sit on top of the constant. In five games the label runs ahead of a moving ball by 0.11–0.18 px for each px/frame of speed; in game4 and game5 that slope is under 0.03. And in game4 and game6 the horizontal offset drifts across the frame (−1.3 and −2.6 px per 1,000 px).
-4. **Without the flip, the offset is gone.** After 4 epochs of `tennis_v2_noflip`, the mean horizontal error on game7 is +0.09 px (760 detections), and +1.23 with mirrored input. Its `source_res_4px` F1 at that point is already 0.864, against 0.771 for the finished baseline; `model_res_4px` is 0.922, level with the baseline's 0.924 at the same epoch.
+3. **The labels are not on the ball, in any of game1–7.** Without any model: crop the source frame around each label, remove the background with the median of the six neighbouring frames, and take the centroid of the moving blob. For a still ball at the centre of the frame, the blob is 1.3–1.7 px left of and 1.0–1.7 px above the label in each of the seven games (game7: −1.50, −1.32 source px). At 512x288 that is about 0.6 px. Two further effects sit on top of the constant and roughly average out over a clip. In five games the label runs ahead of a moving ball by 0.11–0.18 px for each px/frame of speed, which is 1–1.5 px either way at typical speeds; in game4 and game5 that slope is under 0.03. A flip does not disturb this, because it mirrors the ball's direction too. And in game4 and game6 the offset drifts across the frame: −1.3 and −2.6 px per 1,000 px horizontally, −1.4 and −1.2 vertically.
+4. **Without the flip, the offset is gone.** After 4 epochs of `tennis_v2_noflip`, the mean horizontal error on game7 is +0.09 px (760 detections), and +1.23 with mirrored input. Its `source_res_4px` F1 at that point is already 0.864, against 0.771 for the finished baseline; `model_res_4px` is 0.922, level with the baseline's 0.924 at the same epoch. Two things this does not show: the baseline's offset at epoch 4 (no checkpoint was kept), and whether the no-flip model stays near zero through epoch 30 (pending).
 
-The same numbers as horizontal position relative to the ball, at 512x288, taking the label to be 0.58 px right of the ball as measurement 3 gives for game7:
+The same numbers as horizontal position relative to the ball, at 512x288, taking the label to be 0.58 px right of the ball, which is game7's mean offset in measurement 3 (1.45 source px; the training games' means are 0.45–0.69 px):
 
 | Model | Frames | Input as recorded | Input mirrored |
 |---|---|---|---|
@@ -88,7 +88,7 @@ The same numbers as horizontal position relative to the ball, at 512x288, taking
 
 **What is not explained.** On training frames the baseline gets both cases right (first row). Having seen each frame about 30 times, the simplest account is that it memorised them, not that it reads the orientation from the scene. On game7 it puts the ball 0.5 px to the left whichever way the input faces (second row). A model that simply could not tell would be expected to settle on the ball itself; why this one settles on the mirrored rule is not known.
 
-**Caveats on measurement 3.** The blob centroid is a crude estimate of the ball's centre, and lighting could bias it. Its horizontal value agrees with what the models imply, 0.5–0.7 px in the table above. The test split was not measured, so "every game" here means game1–7.
+**Caveats on measurement 3.** The blob centroid is a crude estimate of the ball's centre, and lighting could bias it. Its horizontal value agrees with what the models imply, 0.5–0.7 px in the table above. The test split was not measured.
 
 **Two ways to fix it:**
 
