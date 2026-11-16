@@ -38,8 +38,42 @@ DISTANCE_PX = 4.0  # true-positive distance of both evaluation protocols
 
 
 def load_config(path: str | Path) -> dict:
+    """The YAML config at ``path``, merged over its base config if it names one.
+
+    A top-level ``base: <path>``, relative to the directory of the file that
+    names it, loads that config first, by the same rules, and merges this
+    file's keys over it: a dict value merges key by key into the base's dict,
+    any other value replaces the base's. The result has no ``base`` key.
+
+    Raises:
+        ValueError: If following the ``base`` keys leads back to a file
+            already on the chain.
+    """
+    return _load_config(Path(path), ())
+
+
+def _load_config(path: Path, chain: tuple[Path, ...]) -> dict:
     with open(path) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    if not isinstance(config, dict) or "base" not in config:
+        return config
+    chain = (*chain, path.resolve())
+    base_path = path.parent / config.pop("base")
+    if base_path.resolve() in chain:
+        names = " -> ".join(str(p) for p in (*chain, base_path.resolve()))
+        raise ValueError(f"config base chain forms a cycle: {names}")
+    return _merge(_load_config(base_path, chain), config)
+
+
+def _merge(base: dict, override: dict) -> dict:
+    """``base`` with ``override``'s keys merged over it: dicts merge key by key."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _build_datasets(
