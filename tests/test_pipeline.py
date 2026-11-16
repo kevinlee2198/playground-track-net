@@ -33,22 +33,29 @@ def _config_for(tennis_root, **data_overrides):
     return config
 
 
+def _fast_training_config(tennis_root, tmp_path, **overrides):
+    """A config that trains for a few steps at low resolution on CPU or GPU."""
+    return (
+        _config_for(tennis_root)
+        | {
+            # Small for speed; the U-Net is fully convolutional.
+            "input_size": [128, 72],
+            "batch_size": 2,
+            "num_workers": 0,
+            "pin_memory": False,
+            "persistent_workers": False,
+            "amp_dtype": "float32",
+            "compile_model": False,
+            "checkpoint_dir": str(tmp_path / "checkpoints"),
+            "log_dir": str(tmp_path / "runs"),
+            "experiment_name": "e2e",
+        }
+        | overrides
+    )
+
+
 def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
-    config = _config_for(tennis_root)
-    config |= {
-        "input_size": [128, 72],  # small for speed; the U-Net is fully convolutional
-        "epochs": 1,
-        "max_steps": 2,
-        "batch_size": 2,
-        "num_workers": 0,
-        "pin_memory": False,
-        "persistent_workers": False,
-        "amp_dtype": "float32",
-        "compile_model": False,
-        "checkpoint_dir": str(tmp_path / "checkpoints"),
-        "log_dir": str(tmp_path / "runs"),
-        "experiment_name": "e2e",
-    }
+    config = _fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2)
     run_training(config)
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
     assert ckpt.exists()
@@ -75,26 +82,6 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
-
-
-def _fast_training_config(tennis_root, tmp_path, **overrides):
-    """A config that trains for a few steps at low resolution on CPU or GPU."""
-    return (
-        _config_for(tennis_root)
-        | {
-            "input_size": [128, 72],
-            "batch_size": 2,
-            "num_workers": 0,
-            "pin_memory": False,
-            "persistent_workers": False,
-            "amp_dtype": "float32",
-            "compile_model": False,
-            "checkpoint_dir": str(tmp_path / "checkpoints"),
-            "log_dir": str(tmp_path / "runs"),
-            "experiment_name": "e2e",
-        }
-        | overrides
-    )
 
 
 def test_fresh_run_refuses_to_overwrite_existing_checkpoint(tennis_root, tmp_path):
@@ -141,14 +128,9 @@ def test_evaluation_rejects_aspect_ratio_change(tennis_root, tmp_path):
 
 
 def test_write_label_overlays(tennis_root, tmp_path):
-    config = load_config(CONFIG)
-    config["data"] = {
-        "format": "tennis",
-        "root": str(tennis_root),
-        "val_groups": ["game2"],
-        "test_groups": ["game3"],
-    }
-    paths = write_label_overlays(config, tmp_path / "overlays", count=3)
+    paths = write_label_overlays(
+        _config_for(tennis_root), tmp_path / "overlays", count=3
+    )
     assert len(paths) == 3 and all(p.suffix == ".png" and p.exists() for p in paths)
     img = cv2.imread(str(paths[0]))
     assert img is not None
