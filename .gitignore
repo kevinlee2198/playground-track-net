@@ -207,3 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 .vscode
+
+# Datasets, checkpoints and TensorBoard runs
+datasets/
+checkpoints/
+runs/

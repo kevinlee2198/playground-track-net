@@ -4,7 +4,7 @@
 in_channels: 9
 seq_len: 3
 input_size: [512, 288]
-heatmap_radius: 30
+heatmap_radius: 2.5
 
 # Optimizer
 optimizer: AdamW
@@ -20,6 +20,8 @@ lr_schedule:
 batch_size: 2
 epochs: 30
 seed: 42
+train_stride: 1         # validation and test always use stride 3
+log_every: 100          # steps between running-loss log lines
 
 # DataLoader
 num_workers: 4
@@ -30,11 +32,11 @@ persistent_workers: true
 amp_dtype: bfloat16
 
 # torch.compile
-compile_model: true
+compile_model: false    # needs a C compiler; its speed-up is unmeasured on this machine
 
 # Checkpointing
 checkpoint_dir: checkpoints
-experiment_name: default
+experiment_name: tennis_v2_baseline
 
 # TensorBoard
 log_dir: runs
@@ -42,3 +44,10 @@ log_dir: runs
 # Detection
 detection_threshold: 0.5
 distance_threshold: 4
+
+# Dataset: root/<game>/<clip>/Label.csv; splits are made by game
+data:
+  format: tennis
+  root: datasets/tennis
+  val_groups: [game7]
+  test_groups: [game8, game9, game10]

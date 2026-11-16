@@ -157,9 +157,9 @@ class TestUNetBackbone:
 class TestWBCEFocalLoss:
     def test_returns_scalar(self):
         loss_fn = WBCEFocalLoss()
-        pred = torch.sigmoid(torch.randn(2, 3, 288, 512))
+        logits = torch.randn(2, 3, 288, 512)
         target = torch.zeros(2, 3, 288, 512)
-        loss = loss_fn(pred, target)
+        loss = loss_fn(logits, target)
         assert loss.shape == ()
         assert loss.item() >= 0
 
@@ -167,44 +167,72 @@ class TestWBCEFocalLoss:
         loss_fn = WBCEFocalLoss()
         target = torch.zeros(1, 3, 32, 32)
         target[:, :, 15:17, 15:17] = 1.0
-        pred = target.clone().clamp(1e-6, 1 - 1e-6)
-        loss = loss_fn(pred, target)
+        logits = torch.where(target > 0, 14.0, -14.0)
+        loss = loss_fn(logits, target)
         assert loss.item() < 0.01
 
     def test_bad_prediction_high_loss(self):
         loss_fn = WBCEFocalLoss()
         target = torch.zeros(1, 3, 32, 32)
         target[:, :, 15:17, 15:17] = 1.0
-        pred = (1.0 - target).clamp(1e-6, 1 - 1e-6)
-        loss = loss_fn(pred, target)
+        logits = torch.where(target > 0, -14.0, 14.0)
+        loss = loss_fn(logits, target)
         assert loss.item() > 1.0
 
     def test_all_zero_target(self):
         loss_fn = WBCEFocalLoss()
-        pred = torch.full((1, 3, 32, 32), 0.1)
+        logits = torch.logit(torch.full((1, 3, 32, 32), 0.1))
         target = torch.zeros(1, 3, 32, 32)
-        loss = loss_fn(pred, target)
+        loss = loss_fn(logits, target)
         assert not torch.isnan(loss)
         assert not torch.isinf(loss)
 
     def test_continuous_targets_mixup(self):
         loss_fn = WBCEFocalLoss()
-        pred = torch.sigmoid(torch.randn(1, 3, 32, 32))
+        logits = torch.randn(1, 3, 32, 32)
         target = torch.rand(1, 3, 32, 32)
-        loss = loss_fn(pred, target)
+        loss = loss_fn(logits, target)
         assert not torch.isnan(loss)
         assert not torch.isinf(loss)
 
     def test_gradient_flows(self):
         loss_fn = WBCEFocalLoss()
-        raw = torch.randn(1, 3, 32, 32, requires_grad=True)
-        pred = torch.sigmoid(raw)
+        logits = torch.randn(1, 3, 32, 32, requires_grad=True)
         target = torch.zeros(1, 3, 32, 32)
         target[:, :, 15:17, 15:17] = 1.0
-        loss = loss_fn(pred, target)
+        loss = loss_fn(logits, target)
         loss.backward()
-        assert raw.grad is not None
-        assert raw.grad.abs().sum() > 0
+        assert logits.grad is not None
+        assert logits.grad.abs().sum() > 0
+
+    def test_confident_logits_are_finite_in_bf16(self):
+        loss_fn = WBCEFocalLoss()
+        target = torch.ones(1, 3, 8, 8)
+        good = loss_fn(torch.full((1, 3, 8, 8), 12.0, dtype=torch.bfloat16), target)
+        bad = loss_fn(torch.full((1, 3, 8, 8), -12.0, dtype=torch.bfloat16), target)
+        assert good.dtype == torch.float32
+        assert torch.isfinite(good) and good < 1e-6
+        assert torch.isfinite(bad) and bad > 10.0
+
+    def test_matches_probability_formula(self):
+        torch.manual_seed(0)
+        z = torch.randn(2, 3, 16, 16, dtype=torch.float64) * 3
+        y = (torch.rand(2, 3, 16, 16) > 0.9).double()
+        p = torch.sigmoid(z)
+        expected = -(
+            (1 - p) ** 2 * y * torch.log(p) + p**2 * (1 - y) * torch.log(1 - p)
+        ).mean()
+        assert torch.allclose(WBCEFocalLoss()(z, y).double(), expected, atol=1e-5)
+
+
+@pytest.mark.parametrize("build", [TrackNet, tracknet_v5])
+def test_return_logits_matches_probabilities(build):
+    model = build().eval()
+    x = torch.rand(1, 9, 288, 512)
+    with torch.no_grad():
+        assert torch.allclose(
+            torch.sigmoid(model(x, return_logits=True)), model(x), atol=1e-6
+        )
 
 
 class TestTrackNet:
@@ -309,7 +337,7 @@ class TestTrackNetCustomBackbone:
         captured = {}
 
         class CapturingRSTR(torch.nn.Module):
-            def forward(self, logits, attention):
+            def forward(self, logits, attention, return_logits=False):
                 captured["attention"] = attention
                 return torch.sigmoid(logits)
 
@@ -396,8 +424,8 @@ class TestIntegration:
         target = torch.zeros(2, 3, 288, 512)
         target[:, :, 140:150, 250:260] = 1.0
 
-        pred = model(x)
-        loss = loss_fn(pred, target)
+        logits = model(x, return_logits=True)
+        loss = loss_fn(logits, target)
         loss.backward()
 
         for name, param in model.named_parameters():
@@ -635,7 +663,7 @@ class TestTrackNetV5Flow:
                 return enriched, attention
 
         class MockRSTR(nn.Module):
-            def forward(self, logits, attention):
+            def forward(self, logits, attention, return_logits=False):
                 assert logits.shape == (logits.shape[0], 3, 288, 512)
                 assert attention.shape == (logits.shape[0], 4, 288, 512)
                 return torch.sigmoid(logits)
@@ -715,8 +743,8 @@ class TestV5Integration:
         target = torch.zeros(2, 3, 288, 512)
         target[:, :, 140:150, 250:260] = 1.0
 
-        pred = model(x)
-        loss = loss_fn(pred, target)
+        logits = model(x, return_logits=True)
+        loss = loss_fn(logits, target)
         loss.backward()
 
         # Gradients should flow through entire V5 model

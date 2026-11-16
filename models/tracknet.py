@@ -35,7 +35,8 @@ class TrackNet(nn.Module):
                 "with apply_sigmoid=False when using R-STR."
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_logits: bool = False) -> torch.Tensor:
+        """Return heatmap probabilities, or pre-sigmoid logits if requested."""
         attention = None
         if self.mdd is not None:
             mdd_out = self.mdd(x)
@@ -43,10 +44,9 @@ class TrackNet(nn.Module):
                 x, attention = mdd_out
             else:
                 x = mdd_out
-        out = self.backbone(x)
-        if self.rstr is not None:
-            out = self.rstr(out, attention)
-        return out
+        if self.rstr is None:
+            return self.backbone(x, return_logits=return_logits)
+        return self.rstr(self.backbone(x), attention, return_logits=return_logits)
 
 
 def tracknet_v5() -> TrackNet:

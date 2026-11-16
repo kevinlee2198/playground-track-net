@@ -270,15 +270,19 @@ class RSTRHead(nn.Module):
         self,
         logits: torch.Tensor,
         attention: torch.Tensor | None,
+        return_logits: bool = False,
     ) -> torch.Tensor:
         """Refine draft logits using MDD attention and Transformer residual.
 
         Args:
             logits: (B, 3, H, W) raw heatmap logits from backbone (pre-sigmoid).
             attention: (B, 4, H, W) MDD attention maps. Must not be None.
+            return_logits: If True, skip the final sigmoid and return the
+                refined logits.
 
         Returns:
-            heatmaps: (B, 3, H, W) refined heatmaps in [0, 1].
+            heatmaps: (B, 3, H, W) refined heatmaps in [0, 1], or refined
+                logits if ``return_logits`` is True.
 
         Raises:
             ValueError: If attention is None.
@@ -301,4 +305,5 @@ class RSTRHead(nn.Module):
         delta = self.tsatt(draft_masked)  # (B, 3, H, W)
 
         # 4. Residual addition uses pre-dropout draft_mdd
-        return self.sigmoid(draft_mdd + delta)
+        refined = draft_mdd + delta
+        return refined if return_logits else self.sigmoid(refined)

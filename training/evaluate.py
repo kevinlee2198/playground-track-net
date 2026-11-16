@@ -4,74 +4,101 @@ import math
 
 import torch
 
+from inference.postprocess import heatmap_to_coordinates
+
+OUTCOMES = ("tp", "tn", "fp1", "fp2", "fn")
+
 
 def heatmap_to_position(
     heatmap: torch.Tensor, threshold: float = 0.5
 ) -> tuple[float, float, bool]:
     """Extract ball position from a single-frame heatmap.
 
+    The position is the centroid of the largest connected component of
+    pixels above ``threshold``, the same rule inference uses, so a small
+    noise blob does not pull the position away from the ball. Components
+    are 4-connected (pixels touching only at a corner are separate); of
+    equal-size largest components, the one whose first pixel comes first
+    in row-major order wins.
+
     Args:
         heatmap: (H, W) tensor with values in [0, 1].
-        threshold: Minimum value to consider as ball detection.
+        threshold: A pixel is part of a detection only if its value is
+            strictly greater than this.
 
     Returns:
-        (x, y, detected): x/y coordinates of the centroid and whether
-        a ball was detected.
+        (x, y, detected): x/y in heatmap pixels and whether a ball was
+        detected. (0.0, 0.0, False) when nothing exceeds the threshold.
     """
-    binary = (heatmap > threshold).float()
-    if binary.sum() == 0:
+    height, width = heatmap.shape
+    coords = heatmap_to_coordinates(
+        heatmap.detach().float().cpu().numpy(),
+        orig_width=width,
+        orig_height=height,
+        threshold=threshold,
+    )
+    if coords is None:
         return 0.0, 0.0, False
-
-    # Find centroid of all above-threshold pixels
-    ys, xs = torch.where(binary > 0)
-    x = xs.float().mean().item()
-    y = ys.float().mean().item()
-    return x, y, True
+    x, y, _confidence = coords
+    return float(x), float(y), True
 
 
-def compute_detection_metrics(
+def classify_frame(
     pred: tuple[float, float, bool],
     gt: tuple[float, float, bool],
     distance_threshold: float = 4.0,
-) -> tuple[int, int, int]:
-    """Compute TP/FP/FN for a single frame.
+) -> str:
+    """Classify one frame as "tp", "tn", "fp1", "fp2" or "fn".
+
+    fp1 is a detection too far from a present ball (distance above
+    ``distance_threshold``); fp2 is a detection when there is no ball.
 
     Args:
         pred: (x, y, detected) predicted position.
         gt: (x, y, detected) ground truth position.
         distance_threshold: Maximum Euclidean distance for a true positive.
-
-    Returns:
-        (tp, fp, fn) counts.
     """
     pred_x, pred_y, pred_detected = pred
     gt_x, gt_y, gt_detected = gt
 
-    if not pred_detected and not gt_detected:
-        return 0, 0, 0
-    if pred_detected and not gt_detected:
-        return 0, 1, 0
-    if not pred_detected and gt_detected:
-        return 0, 0, 1
-
-    # Both detected -- check distance
-    dist = math.sqrt((pred_x - gt_x) ** 2 + (pred_y - gt_y) ** 2)
-    if dist <= distance_threshold:
-        return 1, 0, 0  # True positive
-    else:
-        return 0, 1, 1  # Both FP and FN
+    if not gt_detected:
+        return "fp2" if pred_detected else "tn"
+    if not pred_detected:
+        return "fn"
+    distance = math.hypot(pred_x - gt_x, pred_y - gt_y)
+    return "tp" if distance <= distance_threshold else "fp1"
 
 
-def aggregate_metrics(tp: int, fp: int, fn: int) -> dict[str, float]:
-    """Compute precision, recall, and F1 from TP/FP/FN counts."""
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = (
-        2 * precision * recall / (precision + recall)
-        if (precision + recall) > 0
-        else 0.0
-    )
-    return {"precision": precision, "recall": recall, "f1": f1}
+def _ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator > 0 else 0.0
+
+
+def aggregate_metrics(counts: dict[str, int]) -> dict[str, float]:
+    """Compute detection metrics from per-outcome frame counts.
+
+    Two recall conventions are reported: ``recall`` leaves fp1 frames out of
+    its denominator (they count only against precision), while
+    ``recall_strict`` also counts them as misses.
+
+    Args:
+        counts: Frame counts keyed by every name in ``OUTCOMES``.
+
+    Returns:
+        Dict with precision, recall, f1, recall_strict, f1_strict and
+        accuracy. Any ratio with a zero denominator is 0.0.
+    """
+    tp, tn, fp1, fp2, fn = (counts[outcome] for outcome in OUTCOMES)
+    precision = _ratio(tp, tp + fp1 + fp2)
+    recall = _ratio(tp, tp + fn)
+    recall_strict = _ratio(tp, tp + fn + fp1)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": _ratio(2 * precision * recall, precision + recall),
+        "recall_strict": recall_strict,
+        "f1_strict": _ratio(2 * precision * recall_strict, precision + recall_strict),
+        "accuracy": _ratio(tp + tn, tp + tn + fp1 + fp2 + fn),
+    }
 
 
 @torch.no_grad()
@@ -82,47 +109,29 @@ def evaluate_epoch(
     detection_threshold: float = 0.5,
     distance_threshold: float = 4.0,
 ) -> dict[str, float]:
-    """Run full-epoch detection and return precision/recall/F1.
+    """Run full-epoch detection and return the detection metrics.
 
     Args:
         model: Trained model returning (B, 3, H, W) sigmoid heatmaps.
         dataloader: Val/test DataLoader yielding (frames, heatmaps).
         device: Device to run inference on.
         detection_threshold: Heatmap threshold for ball detection.
-        distance_threshold: Euclidean pixel distance for TP matching.
+        distance_threshold: Euclidean distance for TP matching, in heatmap
+            pixels.
 
     Returns:
-        Dict with keys: precision, recall, f1, tp, fp, fn.
+        The keys of ``aggregate_metrics`` plus the counts tp, tn, fp1, fp2, fn.
     """
     model.eval()
-    total_tp, total_fp, total_fn = 0, 0, 0
+    counts = dict.fromkeys(OUTCOMES, 0)
 
     for frames, gt_heatmaps in dataloader:
-        frames = frames.to(device)
-        gt_heatmaps = gt_heatmaps.to(device)
+        preds = model(frames.to(device)).cpu()
+        for pred_heatmap, gt_heatmap in zip(
+            preds.flatten(0, 1), gt_heatmaps.flatten(0, 1), strict=True
+        ):
+            pred_pos = heatmap_to_position(pred_heatmap, threshold=detection_threshold)
+            gt_pos = heatmap_to_position(gt_heatmap, threshold=detection_threshold)
+            counts[classify_frame(pred_pos, gt_pos, distance_threshold)] += 1
 
-        preds = model(frames)
-
-        batch_size = preds.shape[0]
-        num_frames = preds.shape[1]
-
-        for b in range(batch_size):
-            for f in range(num_frames):
-                pred_pos = heatmap_to_position(
-                    preds[b, f], threshold=detection_threshold
-                )
-                gt_pos = heatmap_to_position(
-                    gt_heatmaps[b, f], threshold=detection_threshold
-                )
-                tp, fp, fn = compute_detection_metrics(
-                    pred_pos, gt_pos, distance_threshold=distance_threshold
-                )
-                total_tp += tp
-                total_fp += fp
-                total_fn += fn
-
-    metrics = aggregate_metrics(total_tp, total_fp, total_fn)
-    metrics["tp"] = total_tp
-    metrics["fp"] = total_fp
-    metrics["fn"] = total_fn
-    return metrics
+    return {**aggregate_metrics(counts), **counts}

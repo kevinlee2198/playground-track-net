@@ -2,6 +2,8 @@ import numpy as np
 from scipy import ndimage
 from scipy.interpolate import UnivariateSpline
 
+from data.heatmap import model_to_source
+
 
 def heatmap_to_coordinates(
     heatmap: np.ndarray,
@@ -18,7 +20,8 @@ def heatmap_to_coordinates(
         threshold: Detection threshold.
 
     Returns:
-        (x, y, confidence) in original resolution, or None if no ball detected.
+        (x, y, confidence) in original resolution (mapped with
+        ``model_to_source``), or None if no ball detected.
     """
     h, w = heatmap.shape
     binary = (heatmap > threshold).astype(np.int32)
@@ -38,9 +41,8 @@ def heatmap_to_coordinates(
     component_mask = labeled == largest_label
     confidence = float(np.mean(heatmap[component_mask]))
 
-    # Scale to original resolution
-    x_orig = cx * (orig_width / w)
-    y_orig = cy * (orig_height / h)
+    x_orig = model_to_source(cx, w, orig_width)
+    y_orig = model_to_source(cy, h, orig_height)
 
     return (x_orig, y_orig, confidence)
 

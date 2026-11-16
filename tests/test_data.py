@@ -3,12 +3,16 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader
 
 from data.dataset import TrackNetDataset
-from data.heatmap import generate_heatmap
+from data.heatmap import generate_heatmap, model_to_source, source_to_model
+from data.labels import load_labels, visibility_counts
+from data.sources import build_dataset, discover_tennis_clips, split_clips
 from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
+from inference.video_preprocess import preprocess_frame
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +69,85 @@ class TestGenerateHeatmap:
         unique_vals = torch.unique(heatmap)
         assert all(v in (0.0, 1.0) for v in unique_vals)
 
+    def test_default_radius_is_2_5(self):
+        assert generate_heatmap(x=256, y=144, visibility=1).sum() == 21
+
+    def test_float_centre_at_edge_is_clipped(self):
+        hm = generate_heatmap(x=511.84, y=0.2, visibility=1)
+        assert hm[0, 511] == 1.0
+        assert hm[:, :500].sum() == 0
+
+    def test_label_outside_frame_gives_empty_target(self):
+        assert generate_heatmap(x=-50.0, y=10.0, visibility=1).sum() == 0
+
+
+class TestCoordinateMapping:
+    @pytest.mark.parametrize(
+        ("model_size", "source_size"), [(512, 1280), (288, 720), (128, 1280)]
+    )
+    def test_model_to_source_to_model_is_identity(self, model_size, source_size):
+        for x in (-3.25, 0.0, 0.5, 17.3, 255.7, model_size - 1.0):
+            src = model_to_source(x, model_size, source_size)
+            assert abs(source_to_model(src, source_size, model_size) - x) < 1e-9
+
+    def test_pixel_centres_map_onto_pixel_centres(self):
+        # The centre of the frame is the centre of the frame at any resolution.
+        assert source_to_model(639.5, 1280, 512) == pytest.approx(255.5)
+        assert model_to_source(255.5, 512, 1280) == pytest.approx(639.5)
+
+
+def _intensity_centroid(image: torch.Tensor) -> tuple[float, float]:
+    """(x, y) centroid of a (C, H, W) image weighted by its summed intensity."""
+    weight = image.sum(dim=0).double()
+    ys = torch.arange(weight.shape[0], dtype=torch.float64).unsqueeze(1)
+    xs = torch.arange(weight.shape[1], dtype=torch.float64).unsqueeze(0)
+    total = weight.sum()
+    return (
+        float((weight * xs).sum() / total),
+        float((weight * ys).sum() / total),
+    )
+
+
+class TestTargetAlignsWithResizedBall:
+    """The heatmap target must sit on the ball as the resized frame shows it."""
+
+    SOURCE_BALL = (640, 360)  # pixel of a 1280x720 frame the disc is centred on
+
+    @pytest.fixture
+    def disc_clip(self, tmp_path: Path) -> tuple[Path, Path]:
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        img = np.zeros((720, 1280, 3), dtype=np.uint8)
+        cv2.circle(img, self.SOURCE_BALL, 6, (255, 255, 255), -1)
+        cv2.imwrite(str(frames_dir / "0000.png"), img)  # lossless
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            writer.writerow([0, 1, *self.SOURCE_BALL])
+        return frames_dir, csv_path
+
+    def _mapped_label(self) -> tuple[float, float]:
+        x, y = self.SOURCE_BALL
+        return source_to_model(x, 1280, 512), source_to_model(y, 720, 288)
+
+    def test_target_centred_on_resized_ball(self, disc_clip):
+        frames, heatmaps = TrackNetDataset(*disc_clip)[0]
+        x, y = self._mapped_label()
+        ball_x, ball_y = _intensity_centroid(frames[:3])
+        assert abs(ball_x - x) < 0.05 and abs(ball_y - y) < 0.05, (ball_x, ball_y)
+        assert torch.equal(heatmaps[0], generate_heatmap(x, y, visibility=1))
+
+    def test_target_centred_on_resized_ball_after_flip(self, disc_clip):
+        dataset = TrackNetDataset(*disc_clip, transform=HorizontalFlip(p=1.0))
+        frames, heatmaps = dataset[0]
+        x, y = self._mapped_label()
+        ball_x, ball_y = _intensity_centroid(frames[:3])
+        assert abs(ball_x - (511 - x)) < 0.05, ball_x  # mirrored: x -> 511 - x
+        assert abs(ball_y - y) < 0.05, ball_y
+        flipped = generate_heatmap(x, y, visibility=1).flip(-1)
+        assert torch.equal(heatmaps[0], flipped)
+
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -86,6 +169,74 @@ def _write_sample_dataset(
         writer.writerow(["Frame", "Visibility", "X", "Y"])
         for row in labels:
             writer.writerow(row)
+
+
+class TestLoadLabels:
+    @staticmethod
+    def _write_csv(path: Path, header: list[str], rows: list[tuple]) -> Path:
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+        return path
+
+    @staticmethod
+    def _assert_load_fails(path: Path, match: str) -> None:
+        """load_labels raises a ValueError matching ``match`` that names the file."""
+        with pytest.raises(ValueError, match=match) as exc_info:
+            load_labels(path)
+        assert str(path) in str(exc_info.value)
+
+    def test_tennis_layout(self, tennis_root):
+        labels = load_labels(tennis_root / "game1" / "Clip1" / "Label.csv")
+        visible = [label.visible for label in labels]
+        assert [label.frame for label in labels] == [0, 1, 2, 3, 4, 5]
+        assert visible == [True, True, True, False, False, True]
+        assert (labels[0].x, labels[0].y) == (640.0, 360.0)
+        assert (labels[3].x, labels[3].y) == (0.0, 0.0)
+        assert (labels[4].x, labels[4].y) == (0.0, 0.0)
+
+    def test_visibility_counts_are_raw_values(self, tennis_root):
+        counts = visibility_counts(tennis_root / "game1" / "Clip1" / "Label.csv")
+        assert counts == {0: 1, 1: 3, 2: 1, 3: 1}
+
+    def test_internal_layout(self, sample_frames_dir):
+        _, csv_path = sample_frames_dir
+        visible = [label.visible for label in load_labels(csv_path)]
+        assert visible == [True, True, True, False, True, True, True, True, True]
+
+    def test_visible_row_without_coordinates_raises(self, tmp_path):
+        path = self._write_csv(
+            tmp_path / "Label.csv",
+            ["file name", "visibility", "x-coordinate", "y-coordinate", "status"],
+            [("0000.jpg", 1, 640, 360, 0), ("0001.jpg", 1, "", "", "")],
+        )
+        self._assert_load_fails(path, match="coordinates")
+
+    @pytest.mark.parametrize("coord", ["inf", "-inf"])
+    def test_visible_row_with_infinite_coordinate_raises(self, tmp_path, coord):
+        path = self._write_csv(
+            tmp_path / "Label.csv",
+            ["file name", "visibility", "x-coordinate", "y-coordinate", "status"],
+            [("0000.jpg", 1, 640, 360, 0), ("0001.jpg", 1, coord, 355, 0)],
+        )
+        self._assert_load_fails(path, match="coordinates")
+
+    def test_duplicate_frame_raises(self, tmp_path):
+        path = self._write_csv(
+            tmp_path / "labels.csv",
+            ["Frame", "Visibility", "X", "Y"],
+            [(0, 1, 100, 80), (1, 1, 110, 85), (1, 1, 120, 90)],
+        )
+        self._assert_load_fails(path, match="duplicate")
+
+    def test_unknown_header_raises(self, tmp_path):
+        path = self._write_csv(
+            tmp_path / "labels.csv",
+            ["frame_id", "vis", "cx", "cy"],
+            [(0, 1, 100, 80)],
+        )
+        self._assert_load_fails(path, match="header")
 
 
 class TestTrackNetDataset:
@@ -130,6 +281,100 @@ class TestTrackNetDataset:
             assert frames.shape == (9, 288, 512)
             assert heatmaps.shape == (3, 288, 512)
 
+    def test_labels_rescaled_from_source_resolution(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        ds = TrackNetDataset(clip, clip / "Label.csv")
+        assert ds.source_size == (1280, 720)
+        _, heatmaps = ds[0]
+        ys, xs = torch.where(heatmaps[0] > 0)
+        # (640 + 0.5) * 512 / 1280 - 0.5 = 255.7; (360 + 0.5) * 288 / 720 - 0.5 = 143.7.
+        # The 20-pixel disc drawn there has its centroid at (255.75, 143.75).
+        assert abs(xs.float().mean().item() - 255.7) <= 0.1
+        assert abs(ys.float().mean().item() - 143.7) <= 0.1
+        assert heatmaps[0].sum() == 20  # radius 2.5 at offset (0.7, 0.7) covers 20 px
+
+    def test_occluded_and_invisible_frames_have_empty_targets(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        _, heatmaps = TrackNetDataset(clip, clip / "Label.csv")[1]  # frames 3, 4, 5
+        # Frame 5 at (690, 335) maps to (275.7, 133.7): a 20-pixel disc.
+        assert (
+            heatmaps[0].sum() == 0
+            and heatmaps[1].sum() == 0
+            and heatmaps[2].sum() == 20
+        )
+
+    def test_stride_1_window_count_and_overlap(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        ds = TrackNetDataset(clip, clip / "Label.csv", stride=1)
+        assert len(ds) == 4
+        assert torch.equal(ds[1][0][:3], ds[0][0][3:6])
+        assert not torch.equal(ds[1][0][:3], ds[0][0][:3])
+
+    @pytest.mark.parametrize("stride", [1, 3])
+    def test_short_clip_gives_one_padded_window(self, tmp_path, stride):
+        _write_sample_dataset(
+            tmp_path / "frames",
+            tmp_path / "labels.csv",
+            labels=[(0, 1, 100, 80), (1, 1, 300, 200)],
+        )
+        ds = TrackNetDataset(
+            tmp_path / "frames", tmp_path / "labels.csv", stride=stride
+        )
+        assert len(ds) == 1
+        frames, heatmaps = ds[0]
+        assert frames.shape == (9, 288, 512)
+        assert not torch.equal(frames[:3], frames[3:6])
+        assert torch.equal(frames[3:6], frames[6:9])
+        assert torch.equal(heatmaps[1], heatmaps[2])
+
+    def test_invalid_stride_raises(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        with pytest.raises(ValueError, match="stride"):
+            TrackNetDataset(clip, clip / "Label.csv", stride=2)
+
+    def test_frame_label_mismatch_raises(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        (clip / "0005.jpg").unlink()
+        with pytest.raises(ValueError, match="Clip1"):
+            TrackNetDataset(clip, clip / "Label.csv")
+
+    def test_image_without_label_row_raises(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        cv2.imwrite(str(clip / "0006.jpg"), np.zeros((720, 1280, 3), np.uint8))
+        with pytest.raises(ValueError, match=r"Clip1.*files without a label: \[6\]"):
+            TrackNetDataset(clip, clip / "Label.csv")
+
+    def test_frames_match_inference_preprocessing_on_colour_images(self, tmp_path):
+        # Random colours, so swapping BGR and RGB on either side changes the
+        # tensor; 1280x720, so both sides resize.
+        frames_dir = tmp_path / "frames"
+        frames_dir.mkdir()
+        rng = np.random.default_rng(0)
+        paths = []
+        for i in range(3):
+            path = frames_dir / f"{i:04d}.png"
+            cv2.imwrite(str(path), rng.integers(0, 256, (720, 1280, 3), np.uint8))
+            paths.append(path)
+        csv_path = tmp_path / "labels.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Frame", "Visibility", "X", "Y"])
+            writer.writerows((i, 0, 0, 0) for i in range(3))
+
+        frames, _ = TrackNetDataset(frames_dir, csv_path)[0]
+        expected = []
+        for path in paths:
+            bgr = cv2.imread(str(path))  # as infer reads an image directory
+            assert bgr is not None
+            expected.append(preprocess_frame(bgr))
+        assert torch.equal(frames, torch.from_numpy(np.concatenate(expected)))
+
+    def test_image_with_non_integer_name_raises_naming_it(self, tennis_root):
+        clip = tennis_root / "game1" / "Clip1"
+        cv2.imwrite(str(clip / "cover.jpg"), np.zeros((720, 1280, 3), np.uint8))
+        with pytest.raises(ValueError, match="cover.jpg"):
+            TrackNetDataset(clip, clip / "Label.csv")
+
 
 class TestDatasetBoundaryPadding:
     def test_single_frame_dataset(self, tmp_path):
@@ -147,7 +392,7 @@ class TestDatasetBoundaryPadding:
         assert torch.equal(frames[:3], frames[3:6])
         assert torch.equal(frames[:3], frames[6:9])
 
-    def test_four_frames_produces_two_samples(self, tmp_path):
+    def test_four_frames_gives_one_window_without_tail_padding(self, tmp_path):
         labels = [(i, 1, 100 + i * 10, 80 + i * 5) for i in range(4)]
         _write_sample_dataset(
             tmp_path / "frames",
@@ -157,10 +402,10 @@ class TestDatasetBoundaryPadding:
         ds = TrackNetDataset(
             frames_dir=tmp_path / "frames", label_path=tmp_path / "labels.csv"
         )
-        assert len(ds) == 2
-        frames, heatmaps = ds[1]
+        assert len(ds) == 1
+        frames, _ = ds[0]
         assert frames.shape == (9, 288, 512)
-        assert torch.equal(frames[3:6], frames[6:9])
+        assert not torch.equal(frames[3:6], frames[6:9])
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +463,14 @@ class TestFrameColorJitter:
         assert out_frames.min() >= 0.0
         assert out_frames.max() <= 1.0
 
+    def test_same_jitter_applied_to_all_three_frames(self):
+        torch.manual_seed(0)
+        frame = torch.rand(3, 32, 64)
+        out, _ = FrameColorJitter()(frame.repeat(3, 1, 1), torch.zeros(3, 32, 64))
+        a, b, c = out.chunk(3, dim=0)
+        assert torch.allclose(a, b) and torch.allclose(b, c)
+        assert not torch.allclose(a, frame)
+
 
 class TestMixup:
     def test_mixup_blends_frames_and_heatmaps(self):
@@ -271,6 +524,82 @@ class TestCompose:
 
 
 # ---------------------------------------------------------------------------
+# Sources: clip discovery, splits, multi-clip datasets
+# ---------------------------------------------------------------------------
+
+
+class TestSources:
+    def test_discover_tennis_clips(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        assert [(c.group, c.frames_dir.name) for c in clips] == [
+            ("game1", "Clip1"),
+            ("game1", "Clip2"),
+            ("game2", "Clip1"),
+            ("game3", "Clip1"),
+        ]
+        assert all(c.label_path.name == "Label.csv" for c in clips)
+
+    def test_natural_order(self, tmp_path):
+        for game, clip in [
+            ("game2", "Clip1"),
+            ("game10", "Clip1"),
+            ("game1", "Clip10"),
+            ("game1", "Clip2"),
+        ]:
+            clip_dir = tmp_path / game / clip
+            clip_dir.mkdir(parents=True)
+            (clip_dir / "Label.csv").touch()
+        clips = discover_tennis_clips(tmp_path)
+        assert [(c.group, c.frames_dir.name) for c in clips] == [
+            ("game1", "Clip2"),
+            ("game1", "Clip10"),
+            ("game2", "Clip1"),
+            ("game10", "Clip1"),
+        ]
+
+    def test_split_by_group_never_shares_a_game(self, tennis_root):
+        s = split_clips(
+            discover_tennis_clips(tennis_root),
+            val_groups=["game2"],
+            test_groups=["game3"],
+        )
+        assert [len(s[k]) for k in ("train", "val", "test")] == [2, 1, 1]
+        assert {c.group for c in s["train"]} == {"game1"}
+        assert {c.group for c in s["val"]} == {"game2"}
+        assert {c.group for c in s["test"]} == {"game3"}
+
+    def test_build_dataset_lengths(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        assert len(build_dataset(clips, stride=1, radius=2.5)) == 16  # 4 clips x 4
+        assert len(build_dataset(clips, stride=3, radius=2.5)) == 8  # 4 clips x 2
+
+    def test_unknown_group_raises(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        with pytest.raises(ValueError, match="game9"):
+            split_clips(clips, val_groups=["game9"], test_groups=[])
+
+    def test_overlapping_groups_raises(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        with pytest.raises(ValueError, match="game2"):
+            split_clips(clips, val_groups=["game2"], test_groups=["game2"])
+
+    def test_empty_train_raises(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        with pytest.raises(ValueError, match="train"):
+            split_clips(clips, val_groups=["game1", "game2"], test_groups=["game3"])
+
+    def test_missing_root_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            discover_tennis_clips(tmp_path / "does-not-exist")
+
+    def test_root_without_clips_raises(self, tennis_root):
+        too_deep = tennis_root / "game1"  # holds clips, not games
+        with pytest.raises(ValueError, match="<game>/<clip>/Label.csv") as err:
+            discover_tennis_clips(too_deep)
+        assert str(too_deep) in str(err.value)
+
+
+# ---------------------------------------------------------------------------
 # Integration
 # ---------------------------------------------------------------------------
 
@@ -278,12 +607,16 @@ class TestCompose:
 class TestPackageImports:
     def test_imports(self):
         from data import (
+            Label,
             TrackNetDataset,
             generate_heatmap,
+            load_labels,
         )
 
         assert TrackNetDataset is not None
         assert generate_heatmap is not None
+        assert Label is not None
+        assert load_labels is not None
 
 
 class TestDataLoader:
