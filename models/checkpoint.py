@@ -5,6 +5,45 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from models.backbone import UNetBackbone
+from models.tracknet import TrackNet
+
+
+def build_model(config: dict | None = None) -> TrackNet:
+    """The V2 ``TrackNet`` that ``config`` trains.
+
+    Three RGB frames make 9 input channels; a true ``background_frame`` adds
+    the clip's median background as a fourth image, 12 channels. A config
+    without the key, or none at all, builds the 9-channel default, initialised
+    exactly as ``TrackNet()`` is.
+    """
+    images = 4 if config and config.get("background_frame", False) else 3
+    return TrackNet(UNetBackbone(in_channels=3 * images, num_classes=3))
+
+
+def load_model(path: str | Path, device: torch.device) -> tuple[TrackNet, dict | None]:
+    """The model saved at ``path``, built as it was trained, on ``device``.
+
+    A trainer checkpoint (a dict holding ``"model_state_dict"``) builds the
+    model from the config stored beside the weights; a bare state dict builds
+    the default. Keys must match exactly.
+
+    Returns:
+        The model and the checkpoint's stored config, or None for a bare
+        state dict.
+
+    Raises:
+        RuntimeError: If the weights do not fit the architecture built.
+    """
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    if "model_state_dict" in checkpoint:
+        state_dict, config = checkpoint["model_state_dict"], checkpoint.get("config")
+    else:
+        state_dict, config = checkpoint, None
+    model = build_model(config)
+    model.load_state_dict(state_dict)
+    return model.to(device), config
+
 
 def load_model_weights(
     model: nn.Module, path: str | Path, device: torch.device

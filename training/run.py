@@ -27,7 +27,7 @@ from data import (
     split_clips,
     visibility_counts,
 )
-from models import TrackNet, WBCEFocalLoss, load_model_weights
+from models import WBCEFocalLoss, build_model, load_model
 from training.evaluate import OUTCOMES, evaluate_epoch
 from training.trainer import Trainer, experiment_dir
 
@@ -131,7 +131,7 @@ def _build_datasets(
 
 
 def run_training(config: dict, resume: str | Path | None = None) -> None:
-    """Train ``TrackNet()`` on the train split, validating on the val split.
+    """Train ``build_model(config)`` on the train split, validating on the val split.
 
     ``config`` must hold only plain YAML types: the trainer stores it in every
     checkpoint. With ``resume``, training continues from that checkpoint.
@@ -153,7 +153,7 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
     # The model is initialised before the Trainer seeds, so seed it here too.
     torch.manual_seed(config["seed"])
     trainer = Trainer(
-        TrackNet(), WBCEFocalLoss(), datasets["train"], datasets["val"], config
+        build_model(config), WBCEFocalLoss(), datasets["train"], datasets["val"], config
     )
     if resume is not None:
         _warn_config_changes(trainer.load_checkpoint(str(resume)), config)
@@ -208,12 +208,41 @@ def _source_res_distance(dataset: ConcatDataset, width: int, height: int) -> flo
     return DISTANCE_PX * width / source_width
 
 
+def checkpoint_background(
+    config: dict, stored: dict | None, weights: str | Path
+) -> bool:
+    """Whether to give the model at ``weights`` a background frame.
+
+    ``stored`` is the config ``load_model`` returned for ``weights``. When
+    there is one, its ``background_frame`` decides (false if the key is
+    absent: the checkpoint predates it), with a warning if ``config`` says
+    otherwise; for a bare state dict ``config`` decides.
+    """
+    configured = config["background_frame"]
+    if stored is None:
+        return configured
+    trained = bool(stored.get("background_frame", False))
+    if trained != configured:
+        logger.warning(
+            "%s was trained with background_frame=%s; the config says %s. "
+            "Using the checkpoint's value.",
+            weights,
+            trained,
+            configured,
+        )
+    return trained
+
+
 def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
     """Evaluate ``weights`` on the "val" or "test" split under two protocols.
 
     Both count a detection within 4 px of the label as a true positive:
     ``model_res_4px`` measures in heatmap pixels at model resolution,
     ``source_res_4px`` in pixels of the source video.
+
+    The model is built as ``weights`` was trained (see ``load_model``), and a
+    trainer checkpoint's ``background_frame`` overrides the config's (see
+    ``checkpoint_background``).
 
     Returns:
         {"split", "frames": frames scored, "model_res_4px": metrics,
@@ -224,17 +253,16 @@ def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
         ValueError: If the split's clips differ in source size or the resize
             to ``input_size`` changes their aspect ratio.
     """
-    dataset = _build_datasets(config, (split,))[split]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, stored = load_model(weights, device)
+    background = checkpoint_background(config, stored, weights)
+    datasets = _build_datasets(config | {"background_frame": background}, (split,))
+    dataset = datasets[split]
     width, height = config["input_size"]
     distances = {
         "model_res_4px": DISTANCE_PX,
         "source_res_4px": _source_res_distance(dataset, width, height),
     }
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrackNet()
-    load_model_weights(model, weights, device)
-    model.to(device)
     loader = DataLoader(
         dataset,
         batch_size=config["batch_size"],

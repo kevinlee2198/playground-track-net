@@ -26,6 +26,7 @@ from data import (
     source_to_model,
 )
 from main import build_parser, run_inference
+from models import TrackNet, build_model
 from training.run import (
     _build_datasets,
     _source_res_distance,
@@ -71,13 +72,16 @@ def _fast_training_config(tennis_root, tmp_path, **overrides):
     )
 
 
-def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
-    config = _fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2)
+@pytest.mark.parametrize("background", [False, True])
+def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
+    config = _fast_training_config(
+        tennis_root, tmp_path, epochs=1, max_steps=2, background_frame=background
+    )
     run_training(config)
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
     assert ckpt.exists()
 
-    result = run_evaluation(config, ckpt, split="test")
+    result = run_evaluation(config, ckpt, split="val")
     assert result["frames"] == 6
     for protocol in ("model_res_4px", "source_res_4px"):
         m = result[protocol]
@@ -89,7 +93,7 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
         [
             "infer",
             "--video",
-            str(tennis_root / "game3" / "Clip1"),
+            str(tennis_root / "game2" / "Clip1"),
             "--model",
             str(ckpt),
             "--output",
@@ -99,6 +103,54 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
+
+
+def _background_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "training.run"
+        and r.levelname == "WARNING"
+        and "background_frame" in r.getMessage()
+    ]
+
+
+@pytest.mark.parametrize("trained_with", [True, None])  # None: saved before the key
+def test_evaluation_follows_the_checkpoints_background_frame(
+    tennis_root, tmp_path, caplog, trained_with
+):
+    config = _fast_training_config(tennis_root, tmp_path)
+    stored = {k: v for k, v in config.items() if k != "background_frame"}
+    if trained_with is not None:
+        stored["background_frame"] = trained_with
+    checkpoint = tmp_path / "latest.pt"
+    torch.save(
+        {"model_state_dict": build_model(stored).state_dict(), "config": stored},
+        checkpoint,
+    )
+    trained = bool(trained_with)
+    config["background_frame"] = not trained
+
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        result = run_evaluation(config, checkpoint, split="val")
+    assert result["frames"] == 6
+    assert config["background_frame"] is not trained  # the caller's dict is untouched
+    assert _background_warnings(caplog) == [
+        f"{checkpoint} was trained with background_frame={trained}; the config "
+        f"says {not trained}. Using the checkpoint's value."
+    ]
+
+
+def test_evaluation_of_matching_checkpoint_does_not_warn(tennis_root, tmp_path, caplog):
+    config = _fast_training_config(tennis_root, tmp_path, background_frame=True)
+    checkpoint = tmp_path / "latest.pt"
+    torch.save(
+        {"model_state_dict": build_model(config).state_dict(), "config": config},
+        checkpoint,
+    )
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        assert run_evaluation(config, checkpoint, split="val")["frames"] == 6
+    assert _background_warnings(caplog) == []
 
 
 def test_fresh_run_refuses_to_overwrite_existing_checkpoint(tennis_root, tmp_path):
@@ -233,18 +285,26 @@ def test_unknown_data_format_raises(tennis_root, tmp_path):
         run_training(config)
 
 
+def _default_weights(tmp_path) -> Path:
+    """A bare state dict of the default model: evaluation reads its weights
+    before it builds the split."""
+    path = tmp_path / "weights.pt"
+    torch.save(TrackNet().state_dict(), path)
+    return path
+
+
 def test_evaluation_rejects_mixed_source_sizes(tennis_root, tmp_path):
     for frame in (tennis_root / "game3" / "Clip1").glob("*.jpg"):
         cv2.imwrite(str(frame), np.zeros((360, 640, 3), dtype=np.uint8))
     config = _config_for(tennis_root, val_groups=[], test_groups=["game2", "game3"])
     with pytest.raises(ValueError, match="source size"):
-        run_evaluation(config, tmp_path / "unused.pt", split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test")
 
 
 def test_evaluation_rejects_aspect_ratio_change(tennis_root, tmp_path):
     config = _config_for(tennis_root) | {"input_size": [128, 128]}
     with pytest.raises(ValueError, match="aspect ratio"):
-        run_evaluation(config, tmp_path / "unused.pt", split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test")
 
 
 def test_source_resolution_threshold_is_4px_of_the_source(tennis_root):
@@ -283,7 +343,9 @@ def test_evaluation_protocols_disagree_between_their_thresholds(
         writer = csv.writer(f)
         writer.writerow(["file name", "visibility", "x-coordinate", "y-coordinate"])
         writer.writerows((f"{i:04d}.jpg", 1, 640, 360) for i in range(6))
-    monkeypatch.setattr("training.run.TrackNet", _BallOffBy3pxModel)
+    monkeypatch.setattr(
+        "models.checkpoint.build_model", lambda config=None: _BallOffBy3pxModel()
+    )
     weights = tmp_path / "weights.pt"
     torch.save(_BallOffBy3pxModel().state_dict(), weights)
     config = _config_for(tennis_root) | {"num_workers": 0, "pin_memory": False}
@@ -451,7 +513,7 @@ def test_training_rejects_empty_val_split(tennis_root, tmp_path):
 def test_evaluation_rejects_empty_split(tennis_root, tmp_path):
     config = _config_for(tennis_root, test_groups=[])
     with pytest.raises(ValueError, match=r"test split.*data\.test_groups"):
-        run_evaluation(config, tmp_path / "unused.pt", split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test")
 
 
 def test_check_data_skips_empty_split(tennis_root, tmp_path, caplog):
