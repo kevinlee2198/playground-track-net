@@ -155,9 +155,10 @@ def test_evaluation_of_bare_state_dict_has_no_background_frame(
         result = run_evaluation(config, weights, split="val")
     assert result["frames"] == 6
     assert _background_warnings(caplog) == [
-        f"{weights} was trained with background_frame=False; the config "
-        "says True. Using the checkpoint's value."
+        f"{weights} is a bare state dict, loaded as the 9-channel model; the "
+        "config says background_frame=True. Using no background frame."
     ]
+    assert "was trained with" not in caplog.text  # its training config is unknown
 
 
 def test_evaluation_of_matching_checkpoint_does_not_warn(tennis_root, tmp_path, caplog):

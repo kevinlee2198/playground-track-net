@@ -213,14 +213,23 @@ def checkpoint_background(
 ) -> bool:
     """Whether to give the model at ``weights`` a background frame.
 
-    ``stored`` is the config ``load_model`` returned for ``weights``. The
-    checkpoint decides, with a warning if ``config`` says otherwise: its
-    stored ``background_frame`` (false if the key is absent: the checkpoint
-    predates it), or false for a bare state dict (None), which ``load_model``
-    builds as the default 9-channel model.
+    ``stored`` is the config ``load_model`` returned for ``weights``. For a
+    trainer checkpoint its ``background_frame`` decides (false if the key is
+    absent: the checkpoint predates it), with a warning if ``config`` says
+    otherwise. A bare state dict (``stored`` None) has no training config;
+    ``load_model`` builds it as the default 9-channel model, so the answer is
+    false, with a warning if ``config`` says true.
     """
     configured = config["background_frame"]
-    trained = bool(stored and stored.get("background_frame", False))
+    if stored is None:
+        if configured:
+            logger.warning(
+                "%s is a bare state dict, loaded as the 9-channel model; the "
+                "config says background_frame=True. Using no background frame.",
+                weights,
+            )
+        return False
+    trained = bool(stored.get("background_frame", False))
     if trained != configured:
         logger.warning(
             "%s was trained with background_frame=%s; the config says %s. "
