@@ -99,13 +99,12 @@ def report(game: str, values: np.ndarray) -> None:
         f"{game}: n {len(values)}  mean offset dx {dx.mean():+.2f} dy {dy.mean():+.2f}"
     )
     known = ~np.isnan(vx)
-    for name, selected, offset in (
-        ("moving left", known & (vx < -MOVING), dx),
-        ("moving right", known & (vx > MOVING), dx),
-        ("moving up", known & (vy < -MOVING), dy),
-        ("moving down", known & (vy > MOVING), dy),
+    for name, selected, axis, offset in (
+        ("moving left", known & (vx < -MOVING), "dx", dx),
+        ("moving right", known & (vx > MOVING), "dx", dx),
+        ("moving up", known & (vy < -MOVING), "dy", dy),
+        ("moving down", known & (vy > MOVING), "dy", dy),
     ):
-        axis = "dx" if offset is dx else "dy"
         print(
             f"  {name:12s} n {selected.sum():5d}  {axis} {offset[selected].mean():+.2f}"
         )

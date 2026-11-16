@@ -40,6 +40,21 @@ Measured on `best.pt` with `scripts/analysis/val_errors.py`, against the label c
 - Detection threshold: F1 is flat from 0.4 (0.950) to 0.5 (0.949); 0.3 gives 0.944 and 0.6 gives 0.942. The default 0.5 is fine.
 - Per clip, F1 runs from 0.725 (Clip8, 54 frames) to 0.972 (Clip2). The 900-frame Clip4 scores 0.963.
 
+**What the failures look like.** All 172 failing frames were cropped from the source video, with the frame before and after, and sorted by eye. About four in five were clear-cut; treat the counts as approximate.
+
+| Failure | Frames | What is there |
+|---|---|---|
+| Detection, label says no ball | 38 | racket or body 17, a ball held or bounced before a serve 10, court line 5, a ball in flight 3, unclear 3 |
+| Detection, label says occluded | 17 | a ball held or bounced 9, racket or body 6, other 2 |
+| Detection over 4 px from the label | 28 | racket or body 22, court line 3, another ball 2, nothing 1 |
+| Miss | 89 | ball at a racket or player 46, plainly visible 13, blur streak 11, faint 8, on a line or the net 7, no ball visible at the label 3, unclear 1 |
+
+- **Rackets and players are the main problem, in both directions.** 45 of the 83 wrong detections are on a racket, hand, shoe or shorts, most often the yellow-green strings, and 46 of the 89 misses are balls touching a racket or player.
+- **The labels are inconsistent around serves.** A ball in the server's hand or on the strings is marked visible in some clips and absent or occluded in others. Roughly 30–40 of the 172 failures, counting both directions, come from this and are out of any model's reach.
+- **Static structures are a small share:** 8 detections on court lines, all but a few from Clip7, which is blurrier than the rest.
+- **13 misses are plain balls in the open** with a heatmap peak just under the threshold.
+- **A minimum blob size does not help.** Dropping detections under 5 px removes 12 wrong detections and 12 correct ones (F1 0.947, from 0.949); every larger cut-off is worse.
+
 **Localisation.** This is where the two protocols part: 98.3% of detections on a visible ball are within 4 px of the label, but only 67.8% are within 1.6 px.
 
 | | Median | 75th pct | 90th pct | 95th pct |

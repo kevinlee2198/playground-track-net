@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 
 from data import TrackNetDataset, source_to_model
 from models import TrackNet, load_model_weights
+from training.evaluate import aggregate_metrics, classify_frame
 from training.run import _build_datasets, load_config
 
 THRESHOLDS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
@@ -72,26 +73,42 @@ def decode(heatmap: np.ndarray, threshold: float) -> dict | None:
 def outcome(
     position: dict | None, row: dict, limit: float, shift_x: float = 0.0
 ) -> str:
-    """tp, tn, fp1 (wrong place), fp2 (no ball) or fn, as ``classify_frame``."""
-    if not row["visible"]:
-        return "fp2" if position else "tn"
-    if not position:
-        return "fn"
-    distance = math.hypot(
-        position["bx"] + shift_x - row["gx"], position["by"] - row["gy"]
+    """``classify_frame`` on the binary centroid of ``position`` (None when
+    nothing was detected), moved ``shift_x`` px in x."""
+    if position is None:
+        prediction = (0.0, 0.0, False)
+    else:
+        prediction = (position["bx"] + shift_x, position["by"], True)
+    label = (row["gx"], row["gy"], bool(row["visible"]))
+    return classify_frame(prediction, label, limit)
+
+
+def count_outcomes(rows: list[dict], limit: float, shift_x: float = 0.0) -> Counter:
+    """Outcomes of scored rows, each judged on its own detection at 0.5."""
+    return Counter(
+        outcome(row if row["detected"] else None, row, limit, shift_x) for row in rows
     )
-    return "tp" if distance <= limit else "fp1"
 
 
-def prf(counts: Counter) -> str:
-    precision = counts["tp"] / max(counts["tp"] + counts["fp1"] + counts["fp2"], 1)
-    recall = counts["tp"] / max(counts["tp"] + counts["fn"], 1)
-    f1 = 2 * precision * recall / max(precision + recall, 1e-12)
+def format_counts(counts: Counter) -> str:
+    metrics = aggregate_metrics(counts)
     return (
         f"tp {counts['tp']:4d} fp1 {counts['fp1']:3d} fp2 {counts['fp2']:3d} "
         f"fn {counts['fn']:3d} tn {counts['tn']:3d}  "
-        f"P {precision:.4f} R {recall:.4f} F1 {f1:.4f}"
+        f"P {metrics['precision']:.4f} R {metrics['recall']:.4f} "
+        f"F1 {metrics['f1']:.4f}"
     )
+
+
+def label_offset(row: dict, centroid: str = "b") -> tuple[float, float]:
+    """Detected minus labelled position for one of the centroids in ``decode``
+    (b, w or a)."""
+    return row[centroid + "x"] - row["gx"], row[centroid + "y"] - row["gy"]
+
+
+def is_near(row: dict) -> bool:
+    """Whether the binary centroid is within ``NEAR_PX`` of the label."""
+    return math.hypot(*label_offset(row)) <= NEAR_PX
 
 
 def score_frames(config: dict, weights: str) -> tuple[list[dict], dict[float, Counter]]:
@@ -105,9 +122,8 @@ def score_frames(config: dict, weights: str) -> tuple[list[dict], dict[float, Co
 
     rows: list[dict] = []
     sweep = {threshold: Counter() for threshold in THRESHOLDS}
-    for dataset in val.datasets:
-        assert isinstance(dataset, TrackNetDataset)
-        clip = dataset
+    for clip in val.datasets:
+        assert isinstance(clip, TrackNetDataset)
         name = f"{clip.frames_dir.parent.name}/{clip.frames_dir.name}"
         raw = raw_visibility(clip.label_path)
         source_width, source_height = clip.source_size
@@ -141,25 +157,18 @@ def score_frames(config: dict, weights: str) -> tuple[list[dict], dict[float, Co
 def report(
     rows: list[dict], sweep: dict[float, Counter], width: int, height: int
 ) -> None:
-    def position(row: dict) -> dict | None:
-        return row if row["detected"] else None
-
-    def counts(selected: list[dict], limit: float, shift_x: float = 0.0) -> Counter:
-        return Counter(outcome(position(r), r, limit, shift_x) for r in selected)
-
     print(f"frames scored: {len(rows)}")
     for limit in (4.0, 1.6):
-        print(f"within {limit} px: {prf(counts(rows, limit))}")
+        print(f"within {limit} px: {format_counts(count_outcomes(rows, limit))}")
 
     hits = [r for r in rows if r["detected"] and r["visible"]]
     print(f"\ndetections on a visible ball: {len(hits)}")
-    for key, title in (
+    for centroid, title in (
         ("b", "binary centroid"),
         ("w", "weighted centroid"),
         ("a", "argmax"),
     ):
-        dx = np.array([r[key + "x"] - r["gx"] for r in hits])
-        dy = np.array([r[key + "y"] - r["gy"] for r in hits])
+        dx, dy = np.array([label_offset(r, centroid) for r in hits]).T
         distance = np.hypot(dx, dy)
         near = distance <= NEAR_PX
         within = "  ".join(
@@ -176,17 +185,11 @@ def report(
             f"dy mean {dy[near].mean():+.3f} sd {dy[near].std():.3f}"
         )
 
-    dx_near = np.array(
-        [
-            r["bx"] - r["gx"]
-            for r in hits
-            if math.hypot(r["bx"] - r["gx"], r["by"] - r["gy"]) <= NEAR_PX
-        ]
-    )
-    shift = -float(dx_near.mean())
+    near_hits = [r for r in hits if is_near(r)]
+    shift = -float(np.mean([label_offset(r)[0] for r in near_hits]))
     print(
         f"\nshifting predictions {shift:+.2f} px in x (fitted on these frames, so "
-        f"optimistic):\n  within 1.6 px: {prf(counts(rows, 1.6, shift))}"
+        f"optimistic):\n  within 1.6 px: {format_counts(count_outcomes(rows, 1.6, shift))}"
     )
 
     print("\nby raw visibility (0 absent, 1 visible, 2 hard to see, 3 occluded):")
@@ -200,27 +203,23 @@ def report(
 
     print("\nby slot in the 3-frame window (4 px):")
     for slot in range(3):
-        print(
-            f"  slot {slot}: {prf(counts([r for r in rows if r['slot'] == slot], 4.0))}"
-        )
+        selected = [r for r in rows if r["slot"] == slot]
+        print(f"  slot {slot}: {format_counts(count_outcomes(selected, 4.0))}")
 
     print("\nper clip (4 px), with the mean horizontal error of near detections:")
     per_clip = defaultdict(list)
     for r in rows:
         per_clip[r["clip"]].append(r)
     for name, selected in per_clip.items():
-        dx = [
-            r["bx"] - r["gx"]
-            for r in selected
-            if r["detected"]
-            and r["visible"]
-            and math.hypot(r["bx"] - r["gx"], r["by"] - r["gy"]) <= NEAR_PX
-        ]
-        print(f"  {name:13s} {prf(counts(selected, 4.0))}  dx {np.mean(dx):+.2f}")
+        dx = [label_offset(r)[0] for r in near_hits if r["clip"] == name]
+        print(
+            f"  {name:13s} {format_counts(count_outcomes(selected, 4.0))}  "
+            f"dx {np.mean(dx):+.2f}"
+        )
 
     print("\ndetection threshold sweep (4 px):")
-    for threshold, c in sweep.items():
-        print(f"  {threshold:.1f}: {prf(c)}")
+    for threshold, counts in sweep.items():
+        print(f"  {threshold:.1f}: {format_counts(counts)}")
 
     misses = [r for r in rows if r["visible"] and not r["detected"]]
     peaks = np.array([r["max"] for r in misses])

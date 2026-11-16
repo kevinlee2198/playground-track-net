@@ -27,6 +27,14 @@ from training.run import load_config
 NEAR_PX = 10.0
 
 
+def format_offsets(offsets: list[tuple[float, float]], mirrored: bool) -> str:
+    values = np.array(offsets)
+    return (
+        f"mirrored={mirrored!s:5s} n {len(values):5d}  "
+        f"dx {values[:, 0].mean():+.3f}  dy {values[:, 1].mean():+.3f}"
+    )
+
+
 def main() -> None:
     config_path, weights, split, nth = sys.argv[1:5]
     config = load_config(config_path)
@@ -73,19 +81,12 @@ def main() -> None:
                         offsets[(clip_info.group, mirrored)].append((dx, dy))
 
     for mirrored in (False, True):
-        values = np.array(
-            [v for (_, m), group in offsets.items() if m == mirrored for v in group]
-        )
-        print(
-            f"{split} mirrored={mirrored!s:5s} n {len(values):5d}  "
-            f"dx {values[:, 0].mean():+.3f}  dy {values[:, 1].mean():+.3f}"
-        )
+        pooled = [
+            v for (_, m), group in offsets.items() if m == mirrored for v in group
+        ]
+        print(f"{split} {format_offsets(pooled, mirrored)}")
     for (game, mirrored), group in sorted(offsets.items()):
-        values = np.array(group)
-        print(
-            f"  {game:7s} mirrored={mirrored!s:5s} n {len(values):5d}  "
-            f"dx {values[:, 0].mean():+.3f}  dy {values[:, 1].mean():+.3f}"
-        )
+        print(f"  {game:7s} {format_offsets(group, mirrored)}")
 
 
 if __name__ == "__main__":
