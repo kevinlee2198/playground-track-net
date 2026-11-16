@@ -213,6 +213,17 @@ def test_train_split_flips_only_when_the_config_says_so(tennis_root, flip):
     assert val_clip.transform is None
 
 
+@pytest.mark.parametrize("background", [False, True])
+def test_background_frame_adds_channels_to_every_split(tennis_root, background):
+    config = _config_for(tennis_root) | {"background_frame": background}
+    datasets = _build_datasets(config, ("train", "val"))
+    channels = 12 if background else 9
+    for split in ("train", "val"):
+        frames, heatmaps = datasets[split][0]
+        assert frames.shape == (channels, 288, 512), split
+        assert heatmaps.shape == (3, 288, 512), split
+
+
 def test_unknown_data_format_raises(tennis_root, tmp_path):
     # Output paths under tmp_path: the default ones may hold a real run.
     config = _fast_training_config(tennis_root, tmp_path) | {

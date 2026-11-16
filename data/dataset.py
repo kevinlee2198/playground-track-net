@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from data.background import background_indices, median_frame
 from data.heatmap import generate_heatmap, source_to_model
 from data.labels import load_labels
 
@@ -38,6 +39,10 @@ class TrackNetDataset(Dataset):
     Windows start every ``stride`` frames and never run past the end of the clip,
     so trailing frames that do not fill a window are dropped. A clip shorter than
     three frames gives one window padded by repeating its last frame.
+
+    With ``background``, the clip's median background frame (see
+    ``data.background``) is computed once, at model resolution, and appended
+    to every window's frames as channels 9-11.
     """
 
     def __init__(
@@ -49,6 +54,7 @@ class TrackNetDataset(Dataset):
         radius: float = 2.5,
         stride: int = 3,
         transform: Callable | None = None,
+        background: bool = False,
     ) -> None:
         if stride not in STRIDES:
             raise ValueError(f"stride must be one of {STRIDES}, got {stride}")
@@ -86,6 +92,13 @@ class TrackNetDataset(Dataset):
         last_start = max(self.num_frames - FRAMES_PER_SAMPLE + 1, 1)
         self.window_starts = list(range(0, last_start, stride))
 
+        # uint8 (H, W, 3) RGB: the dataset is pickled to every DataLoader worker.
+        self.background: np.ndarray | None = None
+        if background:
+            self.background = median_frame(
+                self._read_rgb(fi) for fi in background_indices(self.num_frames)
+            )
+
     def __len__(self) -> int:
         return len(self.window_starts)
 
@@ -113,6 +126,8 @@ class TrackNetDataset(Dataset):
                     radius=self.radius,
                 )
             )
+        if self.background is not None:
+            frame_tensors.append(_to_tensor(self.background))
 
         frames = torch.cat(frame_tensors, dim=0)
         heatmaps = torch.stack(heatmap_list, dim=0)
@@ -128,9 +143,18 @@ class TrackNetDataset(Dataset):
             raise RuntimeError(f"Failed to read image: {self.frame_paths[fi]}")
         return img
 
-    def _read_frame(self, fi: int) -> torch.Tensor:
-        """Read a single frame from disk and return a (C, H, W) float32 tensor."""
+    def _read_rgb(self, fi: int) -> np.ndarray:
+        """Read a frame as an RGB uint8 (H, W, 3) array at model resolution."""
         img = cv2.cvtColor(self._imread(fi), cv2.COLOR_BGR2RGB)
         if img.shape[:2] != (self.height, self.width):
             img = cv2.resize(img, (self.width, self.height))
-        return torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+        return img
+
+    def _read_frame(self, fi: int) -> torch.Tensor:
+        """Read a single frame from disk and return a (C, H, W) float32 tensor."""
+        return _to_tensor(self._read_rgb(fi))
+
+
+def _to_tensor(img: np.ndarray) -> torch.Tensor:
+    """An (H, W, C) uint8 image as a (C, H, W) float32 tensor in [0, 1]."""
+    return torch.from_numpy(img).permute(2, 0, 1).float() / 255.0

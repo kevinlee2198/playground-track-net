@@ -1,5 +1,6 @@
 import csv
 from pathlib import Path
+from typing import cast
 
 import cv2
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
+from data.background import background_indices, median_frame
 from data.dataset import TrackNetDataset
 from data.heatmap import generate_heatmap, model_to_source, source_to_model
 from data.labels import load_labels, visibility_counts
@@ -409,6 +411,124 @@ class TestDatasetBoundaryPadding:
 
 
 # ---------------------------------------------------------------------------
+# Median background frame
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundIndices:
+    def test_short_clip_uses_every_frame(self):
+        assert background_indices(5) == [0, 1, 2, 3, 4]
+
+    def test_long_clip_spaces_indices_from_first_to_last(self):
+        indices = background_indices(101, 50)
+        assert len(indices) == 50
+        assert indices[0] == 0 and indices[-1] == 100
+        assert indices == sorted(set(indices))  # increasing, without repeats
+
+    def test_single_frame(self):
+        assert background_indices(1) == [0]
+
+
+class TestMedianFrame:
+    def test_uint8_median(self):
+        frames = [np.full((2, 3, 3), v, dtype=np.uint8) for v in (10, 20, 250)]
+        median = median_frame(frames)
+        assert median.dtype == np.uint8
+        assert median.shape == (2, 3, 3)
+        assert np.all(median == 20)
+
+    def test_integer_median_is_rounded(self):
+        # The median of 1 and 2 is 1.5; rounding half to even gives 2.
+        frames = [np.full((2, 3), v, dtype=np.uint8) for v in (1, 2)]
+        assert np.all(median_frame(frames) == 2)
+
+    def test_float_inputs_keep_float32(self):
+        frames = [np.full((2, 3), v, dtype=np.float32) for v in (0.1, 0.2, 0.9)]
+        median = median_frame(frames)
+        assert median.dtype == np.float32
+        assert np.allclose(median, 0.2)
+
+
+def _write_moving_square_clip(
+    tmp_path: Path, num_frames: int
+) -> tuple[Path, Path, np.ndarray]:
+    """A clip whose frames are one fixed random scene with a bright 6x6 square
+    at a different place in each frame. Returns (frames_dir, csv_path, scene),
+    the scene as an RGB uint8 array."""
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    rng = np.random.default_rng(0)
+    scene = rng.integers(0, 200, (288, 512, 3), dtype=np.uint8)  # RGB
+    labels = []
+    for i in range(num_frames):
+        img = scene.copy()
+        x, y = 20 + 50 * i, 30 + 25 * i
+        img[y : y + 6, x : x + 6] = 255
+        # PNG is lossless, so the median recovers the scene exactly.
+        cv2.imwrite(
+            str(frames_dir / f"{i:04d}.png"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        )
+        labels.append((i, 1, x + 3, y + 3))
+    csv_path = tmp_path / "labels.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Frame", "Visibility", "X", "Y"])
+        writer.writerows(labels)
+    return frames_dir, csv_path, scene
+
+
+class TestDatasetBackground:
+    def test_background_is_the_static_scene_in_every_window(self, tmp_path):
+        frames_dir, csv_path, scene = _write_moving_square_clip(tmp_path, 9)
+        with_bg = TrackNetDataset(frames_dir, csv_path, stride=1, background=True)
+        without = TrackNetDataset(frames_dir, csv_path, stride=1)
+        expected = torch.from_numpy(scene).permute(2, 0, 1).float() / 255.0
+        first_background = with_bg[0][0][9:]
+        for i in range(len(with_bg)):
+            frames, heatmaps = with_bg[i]
+            plain_frames, plain_heatmaps = without[i]
+            assert frames.shape == (12, 288, 512)
+            assert frames.dtype == torch.float32
+            assert torch.allclose(frames[9:], expected, atol=1 / 255)
+            assert torch.equal(frames[9:], first_background)
+            assert torch.equal(frames[:9], plain_frames)
+            assert torch.equal(heatmaps, plain_heatmaps)
+
+    def test_background_stored_as_uint8_at_model_resolution(self, tmp_path):
+        frames_dir, csv_path, _ = _write_moving_square_clip(tmp_path, 9)
+        ds = TrackNetDataset(frames_dir, csv_path, background=True)
+        assert ds.background is not None
+        assert ds.background.dtype == np.uint8
+        assert ds.background.shape == (288, 512, 3)
+
+    def test_background_off_by_default(self, tmp_path):
+        frames_dir, csv_path, _ = _write_moving_square_clip(tmp_path, 9)
+        ds = TrackNetDataset(frames_dir, csv_path)
+        assert ds.background is None
+        assert ds[0][0].shape == (9, 288, 512)
+
+    def test_two_frame_clip_gives_one_window_with_background(self, tmp_path):
+        _write_sample_dataset(
+            tmp_path / "frames",
+            tmp_path / "labels.csv",
+            labels=[(0, 1, 100, 80), (1, 1, 300, 200)],
+        )
+        ds = TrackNetDataset(
+            tmp_path / "frames", tmp_path / "labels.csv", background=True
+        )
+        assert len(ds) == 1
+        frames, _ = ds[0]
+        assert frames.shape == (12, 288, 512)
+
+    def test_build_dataset_passes_background_to_every_clip(self, tennis_root):
+        clips = discover_tennis_clips(tennis_root)
+        dataset = build_dataset(clips, stride=3, radius=2.5, background=True)
+        clips_ds = [cast(TrackNetDataset, d) for d in dataset.datasets]
+        assert all(d.background is not None for d in clips_ds)
+        assert dataset[0][0].shape == (12, 288, 512)
+
+
+# ---------------------------------------------------------------------------
 # Transforms
 # ---------------------------------------------------------------------------
 
@@ -421,6 +541,12 @@ class TestHorizontalFlip:
         f_frames, f_heatmaps = flip(frames, heatmaps)
         assert torch.equal(f_frames, frames.flip(-1))
         assert torch.equal(f_heatmaps, heatmaps.flip(-1))
+
+    def test_flip_covers_the_background_channels(self):
+        frames = torch.arange(12 * 4 * 6, dtype=torch.float32).reshape(12, 4, 6)
+        heatmaps = torch.zeros(3, 4, 6)
+        f_frames, _ = HorizontalFlip(p=1.0)(frames, heatmaps)
+        assert torch.equal(f_frames, frames.flip(-1))
 
     def test_no_flip_when_p_zero(self):
         frames = torch.randn(9, 288, 512)
@@ -470,6 +596,15 @@ class TestFrameColorJitter:
         a, b, c = out.chunk(3, dim=0)
         assert torch.allclose(a, b) and torch.allclose(b, c)
         assert not torch.allclose(a, frame)
+
+    def test_same_jitter_applied_to_frames_and_background(self):
+        torch.manual_seed(0)
+        frame = torch.rand(3, 32, 64)
+        out, _ = FrameColorJitter()(frame.repeat(4, 1, 1), torch.zeros(3, 32, 64))
+        assert out.shape == (12, 32, 64)
+        images = out.chunk(4, dim=0)
+        assert all(torch.allclose(images[0], image) for image in images[1:])
+        assert not torch.allclose(images[0], frame)
 
 
 class TestMixup:
@@ -617,6 +752,12 @@ class TestPackageImports:
         assert generate_heatmap is not None
         assert Label is not None
         assert load_labels is not None
+
+    def test_background_helpers_exported(self):
+        import data
+
+        assert data.background_indices is background_indices
+        assert data.median_frame is median_frame
 
 
 class TestDataLoader:

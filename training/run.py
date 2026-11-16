@@ -83,7 +83,9 @@ def _build_datasets(
 
     Train uses ``train_stride`` and colour-jitter augmentation, with a random
     horizontal flip first when ``horizontal_flip`` is set; val and test use
-    stride 3 and no augmentation. With ``skip_empty``, a split with no
+    stride 3 and no augmentation. With ``background_frame``, every split's
+    windows carry the clip's median background as a fourth image. With
+    ``skip_empty``, a split with no
     clips is logged and left out of the result.
 
     Raises:
@@ -121,6 +123,7 @@ def _build_datasets(
             height=height,
             width=width,
             transform=transform,
+            background=config["background_frame"],
         )
         logger.info(
             "%s: %d clips, %d windows", split, len(clips[split]), len(datasets[split])
