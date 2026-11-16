@@ -113,14 +113,14 @@ def _build_datasets(
         if split == "train":
             stride = config["train_stride"]
             flip = [HorizontalFlip()] if config["horizontal_flip"] else []
-            jitter = config["color_jitter"]
-            color_jitter = FrameColorJitter(
-                brightness=jitter["brightness"],
-                contrast=jitter["contrast"],
-                saturation=jitter["saturation"],
-                p=jitter["p"],
+            settings = config["color_jitter"]
+            jitter = FrameColorJitter(
+                brightness=settings["brightness"],
+                contrast=settings["contrast"],
+                saturation=settings["saturation"],
+                p=settings["p"],
             )
-            transform = Compose([*flip, color_jitter])
+            transform = Compose([*flip, jitter])
         else:
             stride, transform = EVAL_STRIDE, None
         datasets[split] = build_dataset(
