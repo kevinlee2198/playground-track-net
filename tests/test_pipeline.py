@@ -592,6 +592,16 @@ def test_check_data_reports_clip_with_frame_gap(tennis_root, tmp_path, caplog):
     assert str(clip_dir) in warnings[0] and "2 to 4" in warnings[0], warnings
 
 
+def test_check_data_computes_no_background(tennis_root, tmp_path, monkeypatch):
+    def no_median(frames):
+        raise AssertionError("check-data computed a background")
+
+    monkeypatch.setattr("data.dataset.median_frame", no_median)
+    config = _config_for(tennis_root) | {"background_frame": True}
+    assert len(write_label_overlays(config, tmp_path, count=3)) == 3
+    assert config["background_frame"] is True  # the caller's dict is untouched
+
+
 def test_training_rejects_empty_val_split(tennis_root, tmp_path):
     config = _fast_training_config(tennis_root, tmp_path) | {
         "data": _config_for(tennis_root, val_groups=[])["data"]

@@ -304,8 +304,9 @@ def write_label_overlays(
 ) -> list[Path]:
     """Write PNGs of visible-ball labels drawn on their frames, for a human to check.
 
-    The datasets are built exactly as for training, so a clip that would break
-    training raises here with the same error. ``count`` visible-ball frames are
+    The datasets are built as for training, except that no background frame
+    is computed, so a clip that would break training raises here with the
+    same error. ``count`` visible-ball frames are
     shared out across the train, val and test splits in turn (each split gets one
     before any gets two) and evenly spaced within each split; if the splits hold
     fewer, all of them are written. Each PNG shows the frame at model resolution
@@ -324,7 +325,12 @@ def write_label_overlays(
         frame order.
     """
     candidates: dict[str, list[tuple[TrackNetDataset, int]]] = {}
-    for split, dataset in _build_datasets(config, SPLITS, skip_empty=True).items():
+    # No background: the counts and overlays never read it, and it decodes up
+    # to 50 frames per clip.
+    datasets = _build_datasets(
+        config | {"background_frame": False}, SPLITS, skip_empty=True
+    )
+    for split, dataset in datasets.items():
         clips = [cast(TrackNetDataset, d) for d in dataset.datasets]
         visibility: Counter[int] = Counter()
         for clip in clips:

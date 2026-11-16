@@ -77,10 +77,10 @@ playground-track-net/
     conftest.py         # Shared synthetic-data fixtures
     test_models.py      # Backbone, loss, V2 wrapper, V5 wiring, model loading (88 tests)
     test_mdd.py         # MDD module unit tests (21 tests)
-    test_data.py        # Labels, clip discovery, dataset, background frame, heatmap, transforms (78 tests)
+    test_data.py        # Labels, clip discovery, dataset, background frame, heatmap, transforms (80 tests)
     test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (57 tests)
     test_inference.py   # Postprocess, tracker, video preprocess (30 tests)
-    test_pipeline.py    # End to end: train, evaluate, check-data, infer (34 tests)
+    test_pipeline.py    # End to end: train, evaluate, check-data, infer (37 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
@@ -98,14 +98,14 @@ playground-track-net/
 | Model V2 (UNet backbone, WBCE loss, wrapper, `build_model` / `load_model`) | Done | 88 in `test_models.py` |
 | Model V5 (MDD module) | Done | 21 in `test_mdd.py` |
 | Model V5 (R-STR head + `tracknet_v5()` factory) | Done | covered in `test_models.py` |
-| Data pipeline (label loader, tennis splits, dataset, heatmaps, augmentations) | Done; run on the real tennis dataset | 78 in `test_data.py` |
+| Data pipeline (label loader, tennis splits, dataset, heatmaps, augmentations) | Done; run on the real tennis dataset | 80 in `test_data.py` |
 | Median background frame (`background_frame: true`) | Done; not yet trained on real data | covered in `test_data.py`, `test_models.py`, `test_inference.py`, `test_pipeline.py` |
 | Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; one full 30-epoch run | 57 in `test_training.py` |
 | Inference (postprocess, Kalman tracker, video I/O) | Done; run on one real clip | 30 in `test_inference.py` |
-| CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 34 in `test_pipeline.py` |
+| CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 37 in `test_pipeline.py` |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 308 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 313 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
