@@ -20,7 +20,7 @@ batch_size: 2
 epochs: 30
 seed: 42
 train_stride: 1         # validation and test always use stride 3
-horizontal_flip: false  # see docs/2026-11-15-pre-training-review.md §6: the flip shifts predictions 1.1 px on unseen games
+horizontal_flip: false  # docs/2026-11-16-training-results.md §4
 log_every: 100          # steps between running-loss log lines
 
 # DataLoader

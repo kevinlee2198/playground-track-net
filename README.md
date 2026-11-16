@@ -8,7 +8,7 @@ TrackNet is a heatmap-based deep learning network that detects small, fast-movin
 
 **Why TrackNet over YOLO/DETR?** Single-frame detectors struggle with sub-10px, motion-blurred balls. TrackNet's multi-frame input achieves 97.5% tracking accuracy vs 53.5% for YOLOv7 on shuttlecock tracking.
 
-**Status (2026-11-15):** the V2 pipeline runs end to end on the real TrackNet tennis dataset: `check-data`, `train`, `evaluate` and `infer` have all run on it, and one full training epoch of the default recipe trained and validated cleanly. No full training run exists yet, and nothing has been evaluated on the test split. See [Known Issues](#known-issues) and §4.4–§5 of [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) for the measured numbers and open decisions.
+**Status (2026-11-16):** the first full run is done. V2 trained for 30 epochs on the TrackNet tennis dataset reaches F1 0.949 on the validation game at 4 px, 512x288, and 0.771 at 4 px of the 1280x720 source. Most of that gap is one constant 1.1 px horizontal offset, traced to the flip augmentation meeting an offset in the dataset's labels; a run without the flip is in progress. Nothing has been evaluated on the test split. Results and analysis: [docs/2026-11-16-training-results.md](docs/2026-11-16-training-results.md). Open decisions: [Known Issues](#known-issues) and §5 of [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md).
 
 ## Architecture
 
@@ -76,10 +76,11 @@ playground-track-net/
     test_data.py        # Labels, clip discovery, dataset, heatmap, transforms (64 tests)
     test_training.py    # Trainer loop, metrics, checkpointing, resume (52 tests)
     test_inference.py   # Postprocess, tracker, video preprocess (28 tests)
-    test_pipeline.py    # End to end: train, evaluate, check-data, infer (25 tests)
+    test_pipeline.py    # End to end: train, evaluate, check-data, infer (27 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
+    2026-11-16-training-results.md           # Full training runs: results and error analysis
     2026-04-14-architecture-review-synthesis.md  # Full-product (iOS app) architecture review
     superpowers/specs/  # Design specifications (ball tracker, on-device iOS slice)
     superpowers/plans/  # Implementation plans (V2 model/data/training/inference, V5 sigmoid/MDD/R-STR; 2026-11-15-pre-training-fixes.md)
@@ -99,17 +100,19 @@ playground-track-net/
 | CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 24 in `test_pipeline.py` |
 | Full training run + published weights | Not started; see [Known Issues](#known-issues) | — |
 
-**Total: 271 tests (65–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 273 tests (65–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
-Details, file references and the measured preflight numbers are in [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) §4–§5.
+Details, file references and the measured preflight numbers are in [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) §4–§5. Training results are in [docs/2026-11-16-training-results.md](docs/2026-11-16-training-results.md).
 
-**Not yet shown:** no full 30-epoch run exists, and nothing has been evaluated on the test split. One epoch reached F1 0.740 on the validation split at 4 px, 512x288 (0.554 at source resolution); that is a check that the model learns, not a result.
+**Shown so far:** one 30-epoch baseline, scored on the validation game only: F1 0.949 at 4 px, 512x288, and 0.771 at source resolution. Nothing has been evaluated on the test split.
 
-**Open before the full run:**
+**Found by the baseline:** predictions sit a constant 1.1 px left of the labels on the validation game and on the labels in the training games. The dataset's labels are about 1.5 source pixels right of the ball, and mirroring half the training windows makes the sign of that offset depend on the orientation. `horizontal_flip: false` (configs/tennis_v2_noflip.yaml) is the first fix being tested.
 
-- **Where it runs.** 30 epochs would take about 6.1 hours on the RTX 3070 Laptop (8 GB) without `torch.compile`, extrapolated from one measured epoch.
+**Open:**
+
+- **Where it runs.** 30 epochs took 5.6 hours on the RTX 3070 Laptop (8 GB) without `torch.compile`.
 - **Batch size and learning rate.** Batch 2 (the default) peaks at 1,769 MiB and ran at 8.6–8.7 steps per second through the full epoch. Batch 8 ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10; we use AdamW at 1e-4 with weight decay 0.01 and batch 2. `optimizer` (`AdamW` or `Adam`), `learning_rate` and `weight_decay` are set in the config. Under `Adam`, `weight_decay` is an L2 penalty and PyTorch's default is 0, so set it to 0 when reproducing the reference recipe.
 - **`torch.compile`** needs a C compiler, which this machine lacks, so `configs/default.yaml` sets `compile_model: false` and the speed-up is unmeasured. With it set to true on a CUDA machine without a compiler, `train` stops at startup and says how to fix it.
 - **Mixup** is implemented but not wired in. **Median background frame** input is the planned first experiment after a baseline. **Colour jitter strength** (0.3 brightness, contrast and saturation, always applied) is stronger than WASB's (0.1 at p = 0.5) and untuned.
@@ -241,6 +244,6 @@ Most of these state no data licence, and some are explicitly non-commercial. Che
 
 1. **Phase 1 — V2 components:** model, data, training, inference pipelines and CLI. **Implemented and run end to end on the real tennis dataset** (one epoch).
 2. **Phase 2 — V5 architecture:** MDD module + R-STR head wired through `tracknet_v5()`. **Implemented, training deferred** (see the note under V5 above).
-3. **Phase 3 — First real training run (next):** settle where it runs and the batch size (see [Known Issues](#known-issues)), train V2 on tennis for 30 epochs, and report metrics under both protocols. First experiment after the baseline: a median background frame as extra input.
+3. **Phase 3 — Training runs (in progress):** the V2 tennis baseline is trained and analysed ([results](docs/2026-11-16-training-results.md)). Now: remove the horizontal offset it exposed. Then: a median background frame as extra input, mixup, colour-jitter strength.
 4. **Phase 4 — Multi-sport and pickleball:** add badminton and multi-sport pre-training; collect and label our own pickleball footage.
 5. **Future:** On-device (iOS) deployment, court detection, shot classification, bounce visualisation, automated scoring. See the specs under `docs/`.

@@ -3,12 +3,13 @@
 ## Project
 TrackNet V2 ball tracking for tennis, badminton, pickleball. PyTorch U-Net heatmap detector.
 Design spec: docs/superpowers/specs/2026-03-21-tracknet-ball-tracking-design.md
-Current state, preflight numbers and open decisions: docs/2026-11-15-pre-training-review.md
+Preflight numbers and open decisions: docs/2026-11-15-pre-training-review.md
+Training runs, results and error analysis: docs/2026-11-16-training-results.md
 Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
 - `uv sync` — install deps
-- `uv run pytest tests/ -q -n 4` — run all tests (271 tests, 65–80 s; serial `-v` takes about as long)
+- `uv run pytest tests/ -q -n 4` — run all tests (273 tests, 65–80 s; serial `-v` takes about as long)
 - `uv run ruff format .` — format code
 - `uv run ruff check --fix .` — lint and auto-fix
 - `uv run ty check` — type check (12 pre-existing diagnostics as of 2026-11-15)
@@ -43,22 +44,24 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - tracknet_v5() factory in models/tracknet.py builds the full V5 stack
 
 ## Testing
-- Tests use synthetic data only: no downloaded datasets, no real video files. The `tennis_root` fixture in tests/conftest.py is a miniature tennis dataset (1280x720 frames, real `Label.csv` header)
+- Tests use synthetic data only: no downloaded datasets, no real video files. A test that trains must put `checkpoint_dir` and `log_dir` under `tmp_path` (`_fast_training_config`): the default ones hold real runs. The `tennis_root` fixture in tests/conftest.py is a miniature tennis dataset (1280x720 frames, real `Label.csv` header)
 - Tests must pass on CPU, but the Trainer picks CUDA when it is available, so on this machine Trainer and pipeline tests run on the GPU. Keep both working
 - Model tests use small tensors (batch=1-2, 288x512) to keep them fast
 - Training unit tests use stub models; tests/test_pipeline.py runs the real TrackNet at 128x72
 
-## Status (2026-11-15)
-- The pipeline has run end to end on the real TrackNet tennis dataset (`datasets/tennis/`, git-ignored, 95 clips). One full epoch of the default recipe trained and validated cleanly. No full training run exists and nothing has been evaluated on the test split. The one-epoch numbers are a sanity check, not a baseline. Measured numbers: review doc §4.4.
+## Status (2026-11-16)
+- First full run done: `tennis_v2_baseline` (default recipe, 30 epochs, 5.6 h on this laptop). Validation (game7): F1 0.949 at 4 px, 512x288; 0.771 at 4 px of the source. Nothing has been evaluated on the test split.
 - Splits (configs/default.yaml): train game1–6, val game7, test game8–10. WASB trains on game1–7, so say so beside any comparison. Leave the test split alone until a model is final.
-- Open (review doc §5): where the 30-epoch run happens (estimated 6.1 h on this laptop, from one epoch), batch size and learning rate (batch 8 runs out of memory at validation here; batch 4 untried), mixup, median background frame, jitter strength, `torch.compile` speed.
-- V5 is deferred. The first run is V2 on tennis.
+- The baseline's predictions sit 1.1 px left of the labels on the validation game (results doc §3–§4). Being tested: `horizontal_flip: false` (configs/tennis_v2_noflip.yaml).
+- Still open (review doc §5): batch size and learning rate, mixup, median background frame, jitter strength, `torch.compile` speed.
+- V5 is deferred.
 
 ## Gotchas
 - Model resolution is 512x288: the default `input_size` and the only resolution trained or measured. `input_size` in the config changes it for train, evaluate and check-data (pipeline tests use 128x72); `infer` always resizes to 512x288. Keep it static for torch.compile
 - Windows are never padded: up to two frames at the end of each clip are neither trained on with full context nor scored (9 frames in val, 35 in test). `infer` pads its last window so every frame gets a prediction
 - Map label coordinates between source and model resolution only with `source_to_model` / `model_to_source` (data/heatmap.py): `(x + 0.5) * scale - 0.5`, through pixel centres as `cv2.resize` does. This deliberately departs from TrackNetV3, whose plain `x * scale` puts the target 0.3 px off the ball at 1280→512
 - Tennis visibility 3 rows carry coordinates but count as ball-absent (`visible_flags=(1, 2)`)
+- Tennis labels are about 1.5 source px right of and 1.3 px below the ball in every game. With `horizontal_flip: true` the horizontal part becomes orientation-dependent and shows up as a constant 1.1 px error on unseen games (results doc §4)
 - Models return sigmoid heatmaps by default; training calls `model(frames, return_logits=True)` and the loss runs in float32 on the logits. Backbone, R-STR head and TrackNet all take `return_logits`
 - Two evaluation protocols: `model_res_4px` (4 px at 512x288) and `source_res_4px` (4 px in source pixels = 1.6 px at 512x288 for 1280-wide video). `evaluate` reports both; per-epoch validation and best.pt selection use `f1` at 4 px, 512x288 only
 - Checkpoints load with `weights_only=True`, so the config must hold only plain YAML types (dict, list, str, int, float, bool, None); the Trainer rejects anything else

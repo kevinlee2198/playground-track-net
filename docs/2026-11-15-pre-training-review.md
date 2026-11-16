@@ -1,7 +1,7 @@
 # Pre-Training Review — Data, Literature, and Code Readiness
 
 **Date:** 2026-11-15
-**Status:** Research complete. First-run decision made. The fixes in §4.1 and §4.2 are done (branch `fix/pre-training-blockers`) and a preflight on the real tennis dataset has passed (§4.4). No full training run yet; the open decisions are in §5.
+**Status:** Research complete. First-run decision made. The fixes in §4.1 and §4.2 are done (branch `fix/pre-training-blockers`) and a preflight on the real tennis dataset has passed (§4.4). The first full run finished on 2026-11-16: see [2026-11-16-training-results.md](2026-11-16-training-results.md). The open decisions are in §5.
 **Scope:** What changed between the April 2026 review and the first real training run.
 **Related:**
 - [data-sources.md](data-sources.md) — full dataset details and verification log
