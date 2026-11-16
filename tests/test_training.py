@@ -214,44 +214,32 @@ def test_load_config_rejects_a_base_cycle(tmp_path):
         load_config(tmp_path / "a.yaml")
 
 
-def test_noflip_config_is_the_default_with_two_overrides():
+@pytest.mark.parametrize(
+    ("experiment", "base", "override"),
+    [
+        ("tennis_v2_noflip", "default", {"horizontal_flip": False}),
+        ("tennis_v2_bg", "tennis_v2_noflip", {"background_frame": True}),
+        ("tennis_v2_mixup", "tennis_v2_noflip", {"mixup_alpha": 0.5}),
+        (
+            "tennis_v2_jitter",
+            "tennis_v2_noflip",
+            {
+                "color_jitter": {
+                    "brightness": 0.1,
+                    "contrast": 0.1,
+                    "saturation": 0.1,
+                    "p": 0.5,
+                }
+            },
+        ),
+    ],
+)
+def test_experiment_config_is_its_base_with_two_overrides(experiment, base, override):
     configs = pathlib.Path(__file__).parent.parent / "configs"
-    default = load_config(configs / "default.yaml")
-    noflip = load_config(configs / "tennis_v2_noflip.yaml")
-    assert noflip == default | {
-        "horizontal_flip": False,
-        "experiment_name": "tennis_v2_noflip",
-    }
-
-
-def test_bg_config_is_the_noflip_config_with_two_overrides():
-    configs = pathlib.Path(__file__).parent.parent / "configs"
-    noflip = load_config(configs / "tennis_v2_noflip.yaml")
-    bg = load_config(configs / "tennis_v2_bg.yaml")
-    assert bg == noflip | {"background_frame": True, "experiment_name": "tennis_v2_bg"}
-    assert bg["horizontal_flip"] is False
-
-
-def test_mixup_config_is_the_noflip_config_with_two_overrides():
-    configs = pathlib.Path(__file__).parent.parent / "configs"
-    noflip = load_config(configs / "tennis_v2_noflip.yaml")
-    mixup = load_config(configs / "tennis_v2_mixup.yaml")
-    assert mixup == noflip | {"mixup_alpha": 0.5, "experiment_name": "tennis_v2_mixup"}
-
-
-def test_jitter_config_is_the_noflip_config_with_two_overrides():
-    configs = pathlib.Path(__file__).parent.parent / "configs"
-    noflip = load_config(configs / "tennis_v2_noflip.yaml")
-    jitter = load_config(configs / "tennis_v2_jitter.yaml")
-    assert jitter == noflip | {
-        "color_jitter": {
-            "brightness": 0.1,
-            "contrast": 0.1,
-            "saturation": 0.1,
-            "p": 0.5,
-        },
-        "experiment_name": "tennis_v2_jitter",
-    }
+    config = load_config(configs / f"{experiment}.yaml")
+    base_config = load_config(configs / f"{base}.yaml")
+    assert config == base_config | override | {"experiment_name": experiment}
+    assert config["horizontal_flip"] is False
 
 
 # ---------------------------------------------------------------------------
