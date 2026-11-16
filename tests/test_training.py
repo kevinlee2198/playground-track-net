@@ -1,6 +1,10 @@
+import datetime
 import glob as glob_module
+import logging
 import math
 import os
+import pathlib
+import re
 import tempfile
 
 import pytest
@@ -404,7 +408,7 @@ def test_checkpoint_save_load_roundtrip():
             config=config,
         )
         ckpt_path = os.path.join(tmpdir, "checkpoints", "test_ckpt", "latest.pt")
-        trainer2.load_checkpoint(ckpt_path)
+        assert trainer2.load_checkpoint(ckpt_path) == config  # the stored config
         assert trainer2.current_epoch == original_epoch
         assert trainer2.best_f1 == original_best_f1
         for key in original_state:
@@ -463,7 +467,43 @@ def test_max_steps_stops_early():
         assert latest["global_step"] == 3
 
 
-def test_resume_continues_from_next_epoch():
+# 4 samples at batch 2 = 2 steps per epoch: max_steps=3 stops in the middle of
+# epoch 2, max_steps=4 at its last step.
+@pytest.mark.parametrize(("max_steps", "complete"), [(3, False), (4, True)])
+def test_checkpoint_records_whether_its_epoch_ran_to_the_end(max_steps, complete):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=5) | {"max_steps": max_steps}
+        ds = _make_synthetic_dataset(num_samples=4)
+        Trainer(SimpleModel(), SimpleLoss(), ds, ds, config).train()
+        latest = torch.load(
+            os.path.join(tmpdir, "checkpoints", "test", "latest.pt"),
+            weights_only=True,
+        )
+        assert latest["epoch"] == 2
+        assert latest["epoch_complete"] is complete
+
+
+def test_resume_from_cut_short_epoch_warns(caplog):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=4)
+        config = _make_test_config(tmpdir, epochs=5)
+        Trainer(SimpleModel(), SimpleLoss(), ds, ds, config | {"max_steps": 3}).train()
+
+        second = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        with caplog.at_level(logging.WARNING, logger="training.trainer"):
+            second.load_checkpoint(
+                os.path.join(tmpdir, "checkpoints", "test", "latest.pt")
+            )
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, warnings
+        message = warnings[0]
+        assert "epoch 2" in message and "step 3" in message, message
+        assert "max_steps" in message and "epoch 3" in message, message
+        # Resume itself is unchanged: it continues from the next epoch.
+        assert (second.current_epoch, second.global_step) == (2, 3)
+
+
+def test_resume_continues_from_next_epoch(caplog):
     with tempfile.TemporaryDirectory() as tmpdir:
         ds = _make_synthetic_dataset(num_samples=4)
         first = Trainer(
@@ -475,11 +515,83 @@ def test_resume_continues_from_next_epoch():
         second = Trainer(
             SimpleModel(), SimpleLoss(), ds, ds, _make_test_config(tmpdir, epochs=2)
         )
-        second.load_checkpoint(os.path.join(tmpdir, "checkpoints", "test", "latest.pt"))
+        with caplog.at_level(logging.WARNING, logger="training.trainer"):
+            second.load_checkpoint(
+                os.path.join(tmpdir, "checkpoints", "test", "latest.pt")
+            )
+        assert not caplog.records  # the epoch ran to the end: nothing to warn about
         assert second.global_step == 2
         second.train()
         assert second.current_epoch == 2
         assert second.global_step == 4  # 2 restored + 2 new
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [({"epochs": 1}, "epochs"), ({"epochs": 5, "max_steps": 2}, "max_steps")],
+)
+def test_resume_with_nothing_left_to_do_says_why(caplog, overrides, reason):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=4)
+        config = _make_test_config(tmpdir, epochs=1)
+        Trainer(SimpleModel(), SimpleLoss(), ds, ds, config).train()
+
+        second = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config | overrides)
+        second.load_checkpoint(os.path.join(tmpdir, "checkpoints", "test", "latest.pt"))
+        with caplog.at_level(logging.INFO, logger="training.trainer"):
+            second.train()
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1 and "Nothing left to do" in messages[0], messages
+        assert reason in messages[0], messages
+        assert (second.current_epoch, second.global_step) == (1, 2)
+
+
+@pytest.mark.parametrize(
+    ("extra", "key_path", "type_name"),
+    [
+        ({"notes": datetime.date(2026, 11, 15)}, "notes", "date"),
+        ({"data": {"roots": [pathlib.Path("datasets")]}}, "data.roots[0]", "Path"),
+        ({"lr_by_epoch": {20: 1e-5}}, "lr_by_epoch", "int"),
+    ],
+)
+def test_config_with_non_plain_value_is_rejected(extra, key_path, type_name):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | extra
+        ds = _make_synthetic_dataset()
+        with pytest.raises(ValueError, match=re.escape(key_path)) as err:
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        assert type_name in str(err.value)
+        # Rejected before any other work: no log or checkpoint directory.
+        assert os.listdir(tmpdir) == []
+
+
+def test_train_set_smaller_than_a_batch_is_rejected():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=1)
+        with pytest.raises(ValueError, match="1 sample.*batch_size 2"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, _make_test_config(tmpdir))
+
+
+@pytest.mark.parametrize("log_every", [0, -5, 2.5, True])
+def test_log_every_must_be_a_positive_int(log_every):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"log_every": log_every}
+        ds = _make_synthetic_dataset()
+        with pytest.raises(ValueError, match="log_every"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+
+
+def test_writer_closed_when_training_fails():
+    class NanLoss(nn.Module):
+        def forward(self, logits, target):
+            return logits.sum() * float("nan")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset()
+        trainer = Trainer(SimpleModel(), NanLoss(), ds, ds, _make_test_config(tmpdir))
+        with pytest.raises(FloatingPointError):
+            trainer.train()
+        assert trainer.writer.all_writers is None  # SummaryWriter.close() ran
 
 
 def test_checkpoint_holds_config_and_step():
@@ -529,8 +641,37 @@ def test_step_loss_logged_every_log_every_steps(caplog):
         trainer = Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
         with caplog.at_level("INFO", logger="training.trainer"):
             trainer.train()
-        step_logs = [r for r in caplog.records if r.getMessage().startswith("Step ")]
+        step_logs = [
+            r.getMessage() for r in caplog.records if r.getMessage().startswith("Step ")
+        ]
         assert len(step_logs) == 4  # 2 epochs x 2 steps, one line per step
+        step_line = re.compile(
+            r"Step (\d+) -- loss: \d+\.\d{4}, (\d+\.\d) steps/s"
+            r"(, peak memory: \d+ MiB)?"
+        )
+        for step, message in enumerate(step_logs, start=1):
+            match = step_line.fullmatch(message)
+            assert match, message
+            assert int(match[1]) == step and float(match[2]) > 0
+            assert (match[3] is not None) == (trainer.device.type == "cuda")
+
+
+def test_epoch_log_reports_train_and_validation_time(caplog):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ds = _make_synthetic_dataset(num_samples=4)
+        config = _make_test_config(tmpdir, epochs=2)
+        with caplog.at_level("INFO", logger="training.trainer"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config).train()
+        epoch_logs = [
+            r.getMessage() for r in caplog.records if r.getMessage().startswith("Epoch")
+        ]
+        epoch_line = (
+            r"Epoch {}/2 -- loss: \d+\.\d{{4}}, F1: \d\.\d{{4}}, prec: \d\.\d{{4}}, "
+            r"rec: \d\.\d{{4}}, train \d+\.\d s, val \d+\.\d s"
+        )
+        assert len(epoch_logs) == 2
+        for epoch, message in enumerate(epoch_logs, start=1):
+            assert re.fullmatch(epoch_line.format(epoch), message), message
 
 
 def test_ensure_compile_supported_reports_failure(monkeypatch):

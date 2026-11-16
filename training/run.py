@@ -103,9 +103,28 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
         TrackNet(), WBCEFocalLoss(), datasets["train"], datasets["val"], config
     )
     if resume is not None:
-        trainer.load_checkpoint(str(resume))
+        _warn_config_changes(trainer.load_checkpoint(str(resume)), config)
         logger.info("Resumed from %s at step %d", resume, trainer.global_step)
     trainer.train()
+
+
+# Keys a resumed run is expected to change: they only set where it stops.
+_RUN_LENGTH_KEYS = ("epochs", "max_steps")
+
+
+def _warn_config_changes(stored: dict, current: dict) -> None:
+    """Log one warning listing each top-level key whose value differs between
+    the checkpoint's config and the current one, except the run-length keys."""
+    changes = [
+        f"{key}: {stored.get(key)!r} -> {current.get(key)!r}"
+        for key in sorted(stored.keys() | current.keys())
+        if key not in _RUN_LENGTH_KEYS and stored.get(key) != current.get(key)
+    ]
+    if changes:
+        logger.warning(
+            "Resuming with a config that differs from the checkpoint's: %s",
+            "; ".join(changes),
+        )
 
 
 def _source_res_distance(dataset: ConcatDataset, width: int, height: int) -> float:

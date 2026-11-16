@@ -4,6 +4,8 @@ import logging
 import os
 import random
 import time
+from collections.abc import Sized
+from typing import cast
 
 import numpy as np
 import torch
@@ -49,6 +51,38 @@ def experiment_dir(config: dict, base_key: str) -> str:
     return os.path.join(config[base_key], config.get("experiment_name", "default"))
 
 
+# Scalar types (besides dict and list) a weights_only=True load restores.
+_PLAIN_TYPES = (str, int, float, bool, type(None))
+
+
+def _check_plain_config(value: object, path: str = "") -> None:
+    """Check that ``value`` holds only dicts with str keys, lists, str, int,
+    float, bool and None, at any depth.
+
+    Raises:
+        ValueError: Naming the key path (e.g. ``data.roots[0]``) and the type
+            of the first value or key that is anything else.
+    """
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(
+                    f"config key {key!r} under {path or 'the top level'} is "
+                    f"{type(key).__name__}, not str; checkpoints store the config "
+                    "and load it with weights_only=True"
+                )
+            _check_plain_config(item, f"{path}.{key}" if path else key)
+    elif type(value) is list:
+        for i, item in enumerate(value):
+            _check_plain_config(item, f"{path}[{i}]")
+    elif type(value) not in _PLAIN_TYPES:
+        raise ValueError(
+            f"config value at {path} is {type(value).__name__}; checkpoints "
+            "store the config and load it with weights_only=True, so it may "
+            "hold only dict, list, str, int, float, bool and None"
+        )
+
+
 class Trainer:
     """Training loop for TrackNet with AMP, logging, and checkpointing."""
 
@@ -60,7 +94,23 @@ class Trainer:
         val_dataset: Dataset,
         config: dict,
     ) -> None:
+        """
+        Raises:
+            ValueError: If ``config`` holds a value a ``weights_only`` load
+                cannot restore, ``log_every`` is not a positive int, or the
+                train set is smaller than one batch.
+        """
+        _check_plain_config(config)
         self.config = config
+
+        # Run length and step logging
+        self.max_steps: int | None = config.get("max_steps")
+        self.log_every: int = config.get("log_every", 100)
+        if type(self.log_every) is not int or self.log_every <= 0:  # not bool either
+            raise ValueError(
+                f"log_every must be a positive int, got {self.log_every!r}"
+            )
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Reproducibility
@@ -90,6 +140,12 @@ class Trainer:
             pin_memory=config.get("pin_memory", True),
             persistent_workers=use_persistent,
         )
+        if len(self.train_loader) == 0:
+            raise ValueError(
+                f"the train set has {len(cast(Sized, train_dataset))} samples, "
+                f"fewer than batch_size {config['batch_size']}: with drop_last "
+                "no batch would be trained"
+            )
         self.val_loader = DataLoader(
             val_dataset,
             batch_size=config["batch_size"],
@@ -131,14 +187,11 @@ class Trainer:
         self.checkpoint_dir = experiment_dir(config, "checkpoint_dir")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # Run length and step logging
-        self.max_steps: int | None = config.get("max_steps")
-        self.log_every: int = config.get("log_every", 100)
-
         # State
         self.current_epoch = 0
         self.global_step = 0
         self.best_f1 = 0.0
+        self.epoch_complete = True  # whether current_epoch ran to its last batch
 
     def _set_seed(self, seed: int) -> None:
         random.seed(seed)
@@ -156,7 +209,8 @@ class Trainer:
         The model must accept ``model(frames, return_logits=True)``. Only the
         forward pass runs under autocast; the loss is computed from float32
         logits outside it. Stops early once ``max_steps`` optimizer steps have
-        been taken in total.
+        been taken in total, and sets ``epoch_complete`` to whether every
+        batch of the epoch was trained.
 
         Raises:
             FloatingPointError: If the loss at any step is NaN or infinite.
@@ -166,6 +220,7 @@ class Trainer:
         num_batches = 0
         window_loss = 0.0
         window_steps = 0
+        window_start = time.perf_counter()
 
         for frames, heatmaps in self.train_loader:
             frames = frames.to(self.device)
@@ -197,28 +252,44 @@ class Trainer:
             window_steps += 1
 
             if self.global_step % self.log_every == 0:
-                self._log_step(window_loss / window_steps)
+                now = time.perf_counter()
+                self._log_step(
+                    window_loss / window_steps, window_steps / (now - window_start)
+                )
                 window_loss = 0.0
                 window_steps = 0
+                window_start = now
 
             if self._reached_max_steps():
                 break
 
+        self.epoch_complete = num_batches == len(self.train_loader)
         return total_loss / max(num_batches, 1)
 
-    def _log_step(self, mean_loss: float) -> None:
-        """Log the mean loss of the steps since the last step log."""
+    def _log_step(self, mean_loss: float, steps_per_s: float) -> None:
+        """Log the mean loss and throughput of the steps in the current window.
+
+        The window runs from the last step log to this one, and restarts at
+        each epoch: the first log of an epoch covers only that epoch's steps
+        (and includes the data loader's start-up).
+        """
         self.writer.add_scalar("Loss/train_step", mean_loss, self.global_step)
         if self.device.type == "cuda":
             peak_mib = torch.cuda.max_memory_allocated(self.device) / 2**20
             logger.info(
-                "Step %d -- loss: %.4f, peak memory: %.0f MiB",
+                "Step %d -- loss: %.4f, %.1f steps/s, peak memory: %.0f MiB",
                 self.global_step,
                 mean_loss,
+                steps_per_s,
                 peak_mib,
             )
         else:
-            logger.info("Step %d -- loss: %.4f", self.global_step, mean_loss)
+            logger.info(
+                "Step %d -- loss: %.4f, %.1f steps/s",
+                self.global_step,
+                mean_loss,
+                steps_per_s,
+            )
 
     @property
     def _unwrapped_model(self) -> nn.Module:
@@ -237,6 +308,7 @@ class Trainer:
         torch.save(
             {
                 "epoch": self.current_epoch,
+                "epoch_complete": self.epoch_complete,
                 "global_step": self.global_step,
                 "model_state_dict": self._unwrapped_model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
@@ -249,9 +321,16 @@ class Trainer:
         os.replace(tmp_path, path)
         return path
 
-    def load_checkpoint(self, path: str) -> None:
+    def load_checkpoint(self, path: str) -> dict:
         """Load a checkpoint from disk, so ``train()`` resumes from the next
-        epoch. ``max_steps`` still counts the restored steps."""
+        epoch. ``max_steps`` still counts the restored steps.
+
+        Logs a warning if the checkpoint's epoch was cut short by
+        ``max_steps``: the rest of that epoch's data is not trained.
+
+        Returns:
+            The config the checkpoint was saved with.
+        """
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self._unwrapped_model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -259,26 +338,60 @@ class Trainer:
         self.current_epoch = checkpoint["epoch"]
         self.global_step = checkpoint["global_step"]
         self.best_f1 = checkpoint["best_f1"]
+        self.epoch_complete = checkpoint.get("epoch_complete", True)
+        if not self.epoch_complete:
+            logger.warning(
+                "%s: epoch %d was cut short at step %d by max_steps; the resumed "
+                "run continues from epoch %d without the rest of that epoch's data",
+                path,
+                self.current_epoch,
+                self.global_step,
+                self.current_epoch + 1,
+            )
+        return checkpoint["config"]
 
     def train(self) -> None:
         """Run the full training loop.
 
         Stops after ``epochs`` epochs or, if set, once ``max_steps`` optimizer
         steps have been taken; the epoch in which the limit is reached still
-        validates and checkpoints.
+        validates and checkpoints. The TensorBoard writer is closed however
+        the loop ends.
         """
+        try:
+            self._train_epochs()
+        finally:
+            self.writer.close()
+
+    def _train_epochs(self) -> None:
         epochs = self.config["epochs"]
+        if self._reached_max_steps():
+            logger.info(
+                "Nothing left to do: global_step %d has reached max_steps %d",
+                self.global_step,
+                self.max_steps,
+            )
+            return
+        if self.current_epoch >= epochs:
+            logger.info(
+                "Nothing left to do: epoch %d of %d epochs is already done",
+                self.current_epoch,
+                epochs,
+            )
+            return
 
         for epoch in range(self.current_epoch, epochs):
             if self._reached_max_steps():
                 break
             self.current_epoch = epoch + 1
-            epoch_start = time.perf_counter()
 
             # Train
+            train_start = time.perf_counter()
             train_loss = self._train_one_epoch()
+            train_seconds = time.perf_counter() - train_start
 
             # Validate
+            val_start = time.perf_counter()
             val_metrics = evaluate_epoch(
                 self.model,
                 self.val_loader,
@@ -286,6 +399,7 @@ class Trainer:
                 detection_threshold=self.config.get("detection_threshold", 0.5),
                 distance_threshold=self.config.get("distance_threshold", 4.0),
             )
+            val_seconds = time.perf_counter() - val_start
 
             # LR step
             self.scheduler.step()
@@ -316,14 +430,16 @@ class Trainer:
             )
 
             logger.info(
-                "Epoch %d/%d -- loss: %.4f, F1: %.4f, prec: %.4f, rec: %.4f, %.1f s",
+                "Epoch %d/%d -- loss: %.4f, F1: %.4f, prec: %.4f, rec: %.4f, "
+                "train %.1f s, val %.1f s",
                 self.current_epoch,
                 epochs,
                 train_loss,
                 val_metrics["f1"],
                 val_metrics["precision"],
                 val_metrics["recall"],
-                time.perf_counter() - epoch_start,
+                train_seconds,
+                val_seconds,
             )
 
             # Save best checkpoint first, so latest.pt records the updated best_f1
@@ -333,5 +449,3 @@ class Trainer:
 
             # Save latest checkpoint
             self._save_checkpoint("latest.pt")
-
-        self.writer.close()

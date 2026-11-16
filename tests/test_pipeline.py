@@ -3,12 +3,15 @@
 import csv
 import logging
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from main import build_parser, run_inference
 from training.run import (
@@ -97,14 +100,74 @@ def test_fresh_run_refuses_to_overwrite_existing_checkpoint(tennis_root, tmp_pat
     assert not (tmp_path / "runs").exists()  # refused before anything was created
 
 
-def test_resume_into_existing_run_is_allowed(tennis_root, tmp_path):
+def _config_change_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "training.run"
+        and r.levelname == "WARNING"
+        and "config" in r.getMessage()
+    ]
+
+
+def test_resume_into_existing_run_is_allowed(tennis_root, tmp_path, caplog):
     run_training(_fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2))
     latest = tmp_path / "checkpoints" / "e2e" / "latest.pt"
 
     config = _fast_training_config(tennis_root, tmp_path, epochs=2, max_steps=4)
-    run_training(config, resume=latest)
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        run_training(config, resume=latest)
     checkpoint = torch.load(latest, weights_only=True)
     assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+    # Only epochs and max_steps changed, and those are meant to change on resume.
+    assert _config_change_warnings(caplog) == []
+
+
+def test_resume_with_unchanged_config_does_not_warn(tennis_root, tmp_path, caplog):
+    config = _fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2)
+    run_training(config)
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        run_training(config, resume=tmp_path / "checkpoints" / "e2e" / "latest.pt")
+    assert "Resumed from" in caplog.text  # the resume did happen
+    assert _config_change_warnings(caplog) == []
+
+
+def test_resume_warns_about_changed_config(tennis_root, tmp_path, caplog):
+    config = _fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2)
+    run_training(config)
+    changed = config | {"heatmap_radius": 3.0, "epochs": 2, "max_steps": 4}
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        run_training(changed, resume=tmp_path / "checkpoints" / "e2e" / "latest.pt")
+    warnings = _config_change_warnings(caplog)
+    assert len(warnings) == 1, warnings
+    assert "heatmap_radius: 2.5 -> 3.0" in warnings[0]
+    assert "epochs" not in warnings[0] and "max_steps" not in warnings[0]
+
+
+def test_cli_log_lines_carry_timestamp_level_and_logger(tennis_root, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_config_for(tennis_root)))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "main.py",
+            "check-data",
+            "--config",
+            str(config_path),
+            "--out",
+            str(tmp_path / "overlays"),
+            "--count",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parents[1],
+    )
+    assert result.returncode == 0, result.stderr
+    line = (
+        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} INFO training\.run: train: 2 clips, .*"
+    )
+    assert re.search(line, result.stderr), result.stderr
 
 
 def test_unknown_data_format_raises(tennis_root):

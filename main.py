@@ -8,6 +8,8 @@ from inference.postprocess import heatmap_to_coordinates, trajectory_rectificati
 from inference.tracker import KalmanBallTracker
 from inference.video_preprocess import create_sliding_windows, extract_frames
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -250,12 +252,14 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.command != "infer":  # infer reports progress with print
+        logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
     if args.command == "infer":
         run_inference(args)
     elif args.command == "train":
         from training.run import load_config, run_training
 
-        logging.basicConfig(level=logging.INFO)
         config = load_config(args.config)
         if args.max_steps is not None:
             config["max_steps"] = args.max_steps
@@ -263,13 +267,11 @@ def main():
     elif args.command == "evaluate":
         from training.run import load_config, run_evaluation
 
-        logging.basicConfig(level=logging.INFO)
         result = run_evaluation(load_config(args.config), args.weights, args.split)
         print(json.dumps(result, indent=2))
     elif args.command == "check-data":
         from training.run import load_config, write_label_overlays
 
-        logging.basicConfig(level=logging.INFO)
         paths = write_label_overlays(load_config(args.config), args.out, args.count)
         print(f"Wrote {len(paths)} overlays to {args.out}")
 
