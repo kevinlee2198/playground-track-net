@@ -5,7 +5,8 @@ from __future__ import annotations
 import csv
 import math
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,10 +35,7 @@ def load_labels(
     whatever the file holds.
     """
     path = Path(path)
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        frame_col, vis_col, x_col, y_col = _detect_columns(reader.fieldnames, path)
-
+    with _open_label_csv(path) as (reader, (frame_col, vis_col, x_col, y_col)):
         labels: list[Label] = []
         seen: set[int] = set()
         for row in reader:
@@ -74,9 +72,7 @@ def visibility_counts(path: str | Path) -> dict[int, int]:
     """
     path = Path(path)
     counts: Counter[int] = Counter()
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        _, vis_col, _, _ = _detect_columns(reader.fieldnames, path)
+    with _open_label_csv(path) as (reader, (_, vis_col, _, _)):
         for row in reader:
             try:
                 counts[int(row[vis_col])] += 1
@@ -85,6 +81,16 @@ def visibility_counts(path: str | Path) -> dict[int, int]:
                     f"{path}, line {reader.line_num}: cannot parse visibility: {e}"
                 ) from e
     return dict(sorted(counts.items()))
+
+
+@contextmanager
+def _open_label_csv(
+    path: Path,
+) -> Iterator[tuple[csv.DictReader, tuple[str, str, str, str]]]:
+    """Open a label CSV; yield its row reader and the detected layout's columns."""
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        yield reader, _detect_columns(reader.fieldnames, path)
 
 
 def _detect_columns(

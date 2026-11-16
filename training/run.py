@@ -27,7 +27,7 @@ from data import (
 )
 from models import TrackNet, WBCEFocalLoss, load_model_weights
 from training.evaluate import OUTCOMES, evaluate_epoch
-from training.trainer import Trainer
+from training.trainer import Trainer, experiment_dir
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +88,7 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
             before anything is built or written.
     """
     if resume is None:
-        latest = (
-            Path(config["checkpoint_dir"])
-            / config.get("experiment_name", "default")
-            / "latest.pt"
-        )
+        latest = Path(experiment_dir(config, "checkpoint_dir")) / "latest.pt"
         if latest.exists():
             raise FileExistsError(
                 f"{latest} already exists and a fresh run would overwrite it: "
@@ -199,8 +195,9 @@ def write_label_overlays(
     64x64 region centred on the label. Files are named
     ``<split>_<game>_<clip>_<frame>.png``.
 
-    Logs, per split, the clip count, the frame count and how many label rows
-    hold each raw visibility value.
+    Logs, per split, the clip count, the frame count, how many label rows
+    hold each raw visibility value and how many visible labels lie outside
+    the source frame.
 
     Returns:
         The written paths: train first, then val, then test, each in clip and

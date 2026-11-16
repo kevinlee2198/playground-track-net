@@ -41,6 +41,14 @@ def ensure_compile_supported(device: torch.device) -> None:
         ) from err
 
 
+def experiment_dir(config: dict, base_key: str) -> str:
+    """``config[base_key]`` joined with the experiment name ("default" if unset).
+
+    ``base_key`` is ``"checkpoint_dir"`` or ``"log_dir"``.
+    """
+    return os.path.join(config[base_key], config.get("experiment_name", "default"))
+
+
 class Trainer:
     """Training loop for TrackNet with AMP, logging, and checkpointing."""
 
@@ -117,16 +125,10 @@ class Trainer:
             )
 
         # TensorBoard
-        log_dir = os.path.join(
-            config["log_dir"], config.get("experiment_name", "default")
-        )
-        self.writer = SummaryWriter(log_dir=log_dir)
+        self.writer = SummaryWriter(log_dir=experiment_dir(config, "log_dir"))
 
         # Checkpointing
-        self.checkpoint_dir = os.path.join(
-            config["checkpoint_dir"],
-            config.get("experiment_name", "default"),
-        )
+        self.checkpoint_dir = experiment_dir(config, "checkpoint_dir")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         # Run length and step logging
