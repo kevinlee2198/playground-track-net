@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import cv2
 import numpy as np
@@ -14,9 +15,19 @@ import torch
 import torch.nn as nn
 import yaml
 
-from data import build_dataset, discover_tennis_clips, generate_heatmap, source_to_model
+from data import (
+    Compose,
+    FrameColorJitter,
+    HorizontalFlip,
+    TrackNetDataset,
+    build_dataset,
+    discover_tennis_clips,
+    generate_heatmap,
+    source_to_model,
+)
 from main import build_parser, run_inference
 from training.run import (
+    _build_datasets,
     _source_res_distance,
     load_config,
     run_evaluation,
@@ -190,8 +201,23 @@ def test_cli_log_lines_carry_timestamp_level_and_logger(tennis_root, tmp_path):
     assert re.search(line, result.stderr), result.stderr
 
 
-def test_unknown_data_format_raises(tennis_root):
-    config = _config_for(tennis_root, format="pickleball")
+@pytest.mark.parametrize("flip", [True, False])
+def test_train_split_flips_only_when_the_config_says_so(tennis_root, flip):
+    config = _config_for(tennis_root) | {"horizontal_flip": flip}
+    datasets = _build_datasets(config, ("train", "val"))
+    train_clip = cast(TrackNetDataset, datasets["train"].datasets[0])
+    val_clip = cast(TrackNetDataset, datasets["val"].datasets[0])
+    kinds = [type(t) for t in cast(Compose, train_clip.transform).transforms]
+    assert (HorizontalFlip in kinds) is flip
+    assert FrameColorJitter in kinds
+    assert val_clip.transform is None
+
+
+def test_unknown_data_format_raises(tennis_root, tmp_path):
+    # Output paths under tmp_path: the default ones may hold a real run.
+    config = _fast_training_config(tennis_root, tmp_path) | {
+        "data": _config_for(tennis_root, format="pickleball")["data"]
+    }
     with pytest.raises(ValueError, match="pickleball"):
         run_training(config)
 
