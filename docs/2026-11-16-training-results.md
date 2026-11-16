@@ -10,6 +10,7 @@ Protocols, as `evaluate` reports them: `model_res_4px` counts a detection within
 |---|---|---|---|---|
 | `tennis_v2_baseline` | none (configs/default.yaml at f759052) | 20 | 0.949 | 0.771 |
 | `tennis_v2_noflip` | `horizontal_flip: false` | running; epoch 4 | 0.922 | 0.864 |
+| `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | planned | planned | planned |
 
 ## 2. Baseline
 
@@ -97,9 +98,25 @@ The same numbers as horizontal position relative to the ball, at 512x288, taking
 
 **For the app:** a model trained without the flip reports positions in the label convention, about 1.5 source px right of and 1.4 px below the ball as it appears. An overlay should subtract that.
 
-## 5. Small things noticed
+## 5. The median background frame
+
+Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) is planned. It differs from `tennis_v2_noflip` by one key, `background_frame: true`, so the comparison is with that run's final numbers.
+
+**The input.** For each clip, the per-pixel median of up to 50 evenly spaced frames, at model resolution, is appended to every window as a fourth RGB image (12 input channels). A moving ball is in few of those frames at any one place, so the median leaves it out. Players who stand still through a short clip partly remain in it.
+
+**Why it is next.** About half of the baseline's failures in §3 are at rackets and players (45 of 83 wrong detections, 46 of 89 misses), and 8 wrong detections are on court lines. A reference image of the static scene could help the model separate the moving ball from what stays put; that is untested here. It is also the best-supported addition in the literature ([pre-training review](2026-11-15-pre-training-review.md) §3.1).
+
+**A check of the input, before any training.** No model involved; game1–7 only, every 5th frame of each clip, against that clip's median background.
+
+- The camera is static within a clip: the mean difference between a frame and its clip's background is 2.5–4.4 of 255, by game.
+- The ball stands out from the background: at a visible ball, the largest difference from the background in the 5x5 patch at the label has a median of 83–119 of 255 by game, and is under 20 in 0–2.7% of frames by game (1.1% on game7).
+
+The script for this check is not in the repository.
+
+## 6. Small things noticed
 
 - The training loss is logged with four decimals and reads `0.0000` from epoch 5 on.
 - `evaluate` builds its ground-truth position from the centroid of the target disc rather than from the label, which moves a few frames across the 1.6 px line (1,107 true positives against 1,099 when scored on label coordinates).
 - Resuming a checkpoint made before `horizontal_flip` existed warns `horizontal_flip: None -> True`, although that run did flip.
+- Resuming a checkpoint made before `background_frame` existed warns `background_frame: None -> False`, although nothing changed.
 - A test wrote to the default checkpoint directory and failed once a real run existed there (fixed with the flip switch).

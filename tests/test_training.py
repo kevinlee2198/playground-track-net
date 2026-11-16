@@ -208,6 +208,14 @@ def test_noflip_config_is_the_default_with_two_overrides():
     }
 
 
+def test_bg_config_is_the_noflip_config_with_two_overrides():
+    configs = pathlib.Path(__file__).parent.parent / "configs"
+    noflip = load_config(configs / "tennis_v2_noflip.yaml")
+    bg = load_config(configs / "tennis_v2_bg.yaml")
+    assert bg == noflip | {"background_frame": True, "experiment_name": "tennis_v2_bg"}
+    assert bg["horizontal_flip"] is False
+
+
 # ---------------------------------------------------------------------------
 # Detection metrics
 # ---------------------------------------------------------------------------
