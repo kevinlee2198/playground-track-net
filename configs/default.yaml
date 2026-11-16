@@ -32,7 +32,7 @@ persistent_workers: true
 amp_dtype: bfloat16
 
 # torch.compile
-compile_model: true
+compile_model: false    # needs a C compiler; its speed-up is unmeasured on this machine
 
 # Checkpointing
 checkpoint_dir: checkpoints

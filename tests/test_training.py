@@ -164,7 +164,7 @@ def test_config_loads_from_yaml():
     assert config["pin_memory"] is True
     assert config["persistent_workers"] is True
     assert config["amp_dtype"] == "bfloat16"
-    assert config["compile_model"] is True
+    assert config["compile_model"] is False
     assert config["seed"] == 42
     assert config["checkpoint_dir"] == "checkpoints"
     assert config["log_dir"] == "runs"
