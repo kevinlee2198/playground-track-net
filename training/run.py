@@ -137,11 +137,16 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
     checkpoint. With ``resume``, training continues from that checkpoint.
 
     Raises:
+        FileNotFoundError: If ``resume`` is given but is not a file.
         FileExistsError: If this experiment already has a ``latest.pt`` and
             ``resume`` is not that same file (paths compared after resolving
             symlinks): a fresh run, or one resumed from another checkpoint,
-            would overwrite it. Checked before anything is built or written.
+            would overwrite it. This includes another checkpoint of this
+            experiment, such as its ``best.pt``.
+        Both are checked before anything is built or written.
     """
+    if resume is not None and not Path(resume).is_file():
+        raise FileNotFoundError(f"resume checkpoint {resume} does not exist")
     latest = Path(experiment_dir(config, "checkpoint_dir")) / "latest.pt"
     if latest.exists():
         if resume is None:
@@ -150,7 +155,13 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
                 f"pass --resume {latest} to continue that run, or set a different "
                 "experiment_name to start a new one"
             )
-        if Path(resume).resolve() != latest.resolve():
+        source, target = Path(resume).resolve(), latest.resolve()
+        if source.parent == target.parent and source != target:
+            raise FileExistsError(
+                f"continuing from {resume} would replace this run's own {latest}: "
+                "set a new experiment_name to branch a new run from it"
+            )
+        if source != target:
             raise FileExistsError(
                 f"{latest} already exists and resuming from {resume} would "
                 "overwrite it: use the config whose experiment_name matches that "

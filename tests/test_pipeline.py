@@ -319,8 +319,42 @@ def test_resume_says_changed_optimizer_settings_have_no_effect(
     )
 
 
+@pytest.mark.parametrize("existing_run", [False, True])
+def test_resume_from_missing_file_says_so(tennis_root, tmp_path, existing_run):
+    config = _fast_training_config(tennis_root, tmp_path)
+    checkpoints = tmp_path / "checkpoints"
+    if existing_run:
+        latest = checkpoints / "e2e" / "latest.pt"
+        latest.parent.mkdir(parents=True)
+        latest.write_bytes(b"checkpoint")
+    before = sorted(checkpoints.rglob("*"))
+    typo = checkpoints / "e2e" / "latest.p"
+    with pytest.raises(FileNotFoundError) as err:
+        run_training(config, resume=typo)
+    assert str(err.value) == f"resume checkpoint {typo} does not exist"
+    assert sorted(checkpoints.rglob("*")) == before  # nothing created
+    assert not (tmp_path / "runs").exists()
+
+
+def test_resume_from_own_best_refuses_to_replace_latest(tennis_root, tmp_path):
+    config = _fast_training_config(tennis_root, tmp_path)
+    latest = tmp_path / "checkpoints" / "e2e" / "latest.pt"
+    latest.parent.mkdir(parents=True)
+    latest.write_bytes(b"latest")
+    best = latest.with_name("best.pt")
+    best.write_bytes(b"best")
+    with pytest.raises(FileExistsError) as err:
+        run_training(config, resume=best)
+    assert str(err.value) == (
+        f"continuing from {best} would replace this run's own {latest}: set a "
+        "new experiment_name to branch a new run from it"
+    )
+    assert latest.read_bytes() == b"latest"  # untouched
+    assert not (tmp_path / "runs").exists()
+
+
 def test_resume_refuses_to_overwrite_another_experiments_checkpoint(
-    tennis_root, tmp_path
+    tennis_root, tmp_path, monkeypatch
 ):
     def config(name, **overrides):
         return _fast_training_config(
@@ -352,6 +386,14 @@ def test_resume_refuses_to_overwrite_another_experiments_checkpoint(
     run_training(config("a", epochs=2, max_steps=4), resume=link)
     checkpoint = torch.load(latest_a, weights_only=True)
     assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+
+    # And so is a path relative to the working directory.
+    monkeypatch.chdir(tmp_path)
+    run_training(
+        config("a", epochs=3, max_steps=6), resume=Path("checkpoints/a/latest.pt")
+    )
+    checkpoint = torch.load(latest_a, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (3, 6)
 
 
 def _warnings_for(caplog, stored: dict, current: dict) -> list[str]:
