@@ -8,7 +8,7 @@ TrackNet is a heatmap-based deep learning network that detects small, fast-movin
 
 **Why TrackNet over YOLO/DETR?** Single-frame detectors struggle with sub-10px, motion-blurred balls. TrackNet's multi-frame input achieves 97.5% tracking accuracy vs 53.5% for YOLOv7 on shuttlecock tracking.
 
-**Status (2026-11-15):** all components are implemented and unit-tested on synthetic data, but nothing has been trained on real data yet, and the code has known defects that block a real run. See [Known Issues](#known-issues) and [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md).
+**Status (2026-11-15):** the V2 pipeline runs end to end on the real TrackNet tennis dataset: `check-data`, `train`, `evaluate` and `infer` have all run on it, and one full training epoch of the default recipe trained and validated cleanly. No full training run exists yet, and nothing has been evaluated on the test split. See [Known Issues](#known-issues) and §4.4–§5 of [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) for the measured numbers and open decisions.
 
 ## Architecture
 
@@ -46,17 +46,21 @@ V5 was implemented from the arXiv paper before any code was public. It differs f
 playground-track-net/
   models/
     backbone.py        # U-Net encoder-decoder (ConvBlock, DownBlock, UpBlock, Bottleneck, UNetBackbone)
-    losses.py          # WBCEFocalLoss
+    losses.py          # WBCEFocalLoss (float32, from logits)
     mdd.py             # MotionDirectionDecoupling (V5)
     rstr.py            # FactorizedAttentionLayer, TSATTHead, RSTRHead (V5)
     tracknet.py        # TrackNet wrapper + tracknet_v5() factory
+    checkpoint.py      # load_model_weights (trainer checkpoint or bare state dict)
   data/
-    dataset.py         # TrackNetDataset (sliding-window CSV loader)
-    heatmap.py         # Binary-disc heatmap generation
+    labels.py          # Label loader: our CSV layout and the tennis Label.csv
+    sources.py         # Tennis clip discovery, split by game, build_dataset
+    dataset.py         # TrackNetDataset (sliding windows over one clip's frames)
+    heatmap.py         # Binary-disc heatmaps; source <-> model coordinate mapping
     transforms.py      # HorizontalFlip, FrameColorJitter, Mixup, Compose
   training/
-    trainer.py         # Trainer (AMP bf16, torch.compile, TensorBoard, checkpointing)
+    trainer.py         # Trainer (AMP bf16, optional torch.compile, TensorBoard, resumable checkpoints)
     evaluate.py        # Detection metrics, evaluate_epoch
+    run.py             # Builds the splits; train, evaluate and check-data entry points
   inference/
     video_preprocess.py # Frame extraction, sliding-window batching
     postprocess.py      # Heatmap -> coordinates, trajectory rectification
@@ -67,55 +71,58 @@ playground-track-net/
     default.yaml        # Training config (optimizer, schedule, AMP, paths)
   tests/
     conftest.py         # Shared synthetic-data fixtures
-    test_models.py      # Backbone, loss, V2 wrapper, V5 wiring (77 tests)
+    test_models.py      # Backbone, loss, V2 wrapper, V5 wiring (81 tests)
     test_mdd.py         # MDD module unit tests (21 tests)
-    test_data.py        # Dataset, heatmap, transforms (27 tests)
-    test_training.py    # Trainer loop, metrics, checkpointing (15 tests)
-    test_inference.py   # Postprocess, tracker, video preprocess (26 tests)
+    test_data.py        # Labels, clip discovery, dataset, heatmap, transforms (64 tests)
+    test_training.py    # Trainer loop, metrics, checkpointing, resume (48 tests)
+    test_inference.py   # Postprocess, tracker, video preprocess (28 tests)
+    test_pipeline.py    # End to end: train, evaluate, check-data, infer (24 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
     2026-04-14-architecture-review-synthesis.md  # Full-product (iOS app) architecture review
     superpowers/specs/  # Design specifications (ball tracker, on-device iOS slice)
     superpowers/plans/  # Implementation plans (V2 model/data/training/inference, V5 sigmoid/MDD/R-STR)
-  main.py              # CLI: train | evaluate | infer
+  main.py              # CLI: train | evaluate | check-data | infer
 ```
 
 ## Implementation Status
 
 | Subsystem | Status | Tests |
 |-----------|--------|-------|
-| Model V2 (UNet backbone, WBCE loss, wrapper) | Done | 77 in `test_models.py` |
+| Model V2 (UNet backbone, WBCE loss, wrapper) | Done | 81 in `test_models.py` |
 | Model V5 (MDD module) | Done | 21 in `test_mdd.py` |
 | Model V5 (R-STR head + `tracknet_v5()` factory) | Done | covered in `test_models.py` |
-| Data pipeline (dataset, heatmaps, augmentations) | Done | 27 in `test_data.py` |
-| Training (trainer, AMP, evaluation, checkpoints) | Done | 15 in `test_training.py` |
-| Inference (postprocess, Kalman tracker, video I/O) | Done | 26 in `test_inference.py` |
-| CLI (`train` / `evaluate` / `infer` subcommands) | `infer` wired; `train`/`evaluate` stubbed | — |
-| Real-data training runs + published weights | Blocked on [Known Issues](#known-issues) | — |
+| Data pipeline (label loader, tennis splits, dataset, heatmaps, augmentations) | Done; run on the real tennis dataset | 64 in `test_data.py` |
+| Training (trainer, AMP, evaluation, resumable checkpoints) | Done; one real epoch run | 48 in `test_training.py` |
+| Inference (postprocess, Kalman tracker, video I/O) | Done; run on one real clip | 28 in `test_inference.py` |
+| CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 24 in `test_pipeline.py` |
+| Full training run + published weights | Not started; see [Known Issues](#known-issues) | — |
 
-**Total: 166 tests (~50s, CPU-only, fully synthetic).** "Done" above means implemented and unit-tested. The tests use 512x288 fixtures and stub models, so they do not exercise real dataset layouts, label rescaling, or mixed-precision training.
+**Total: 266 tests (65–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
-Found in the 2026-11-15 review; none are fixed yet. Details and file references are in [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) §4.
+Details, file references and the measured preflight numbers are in [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) §4–§5.
 
-**Blocking a real training run:**
+**Not yet shown:** no full 30-epoch run exists, and nothing has been evaluated on the test split. One epoch reached F1 0.740 on the validation split at 4 px, 512x288 (0.554 at source resolution); that is a check that the model learns, not a result.
 
-- The loss returns NaN under bfloat16 autocast once predictions are confident.
-- Labels are not rescaled when frames are resized to 512x288.
-- The label loader only parses our own CSV layout, not the layouts the real datasets ship.
-- `infer` feeds BGR frames; training uses RGB.
-- `infer` cannot load a checkpoint saved by the trainer.
-- `train` and `evaluate` CLI commands are placeholders, and there is no train/val/test split logic.
-- `torch.compile` (on by default in `configs/default.yaml`) needs a C compiler, which the current dev machine lacks.
+**Open before the full run:**
 
-**Recipe mismatches against published code:**
+- **Where it runs.** 30 epochs take about 6.1 hours on the RTX 3070 Laptop (8 GB) without `torch.compile`.
+- **Batch size and learning rate.** Batch 2 (the default) peaks at 1,769 MiB and runs 8.8–8.9 steps per second. Batch 8 ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10; we use AdamW at 1e-4 with batch 2.
+- **`torch.compile`** needs a C compiler, which this machine lacks, so `configs/default.yaml` sets `compile_model: false` and the speed-up is unmeasured. With it set to true on a CUDA machine without a compiler, `train` stops at startup and says how to fix it.
+- **Mixup** is implemented but not wired in. **Median background frame** input is the planned first experiment after a baseline. **Colour jitter strength** (0.3 brightness, contrast and saturation, always applied) is stronger than WASB's (0.1 at p = 0.5) and untuned.
 
-- Heatmap radius is 30 px; reference codebases use 2.5 px at 512x288.
-- Training windows step by 3; reference codebases step by 1.
-- Colour jitter is sampled per frame, not per window. Mixup is implemented but not wired in.
-- Evaluation counts errors differently from the papers, so F1 would not be comparable.
+**Limitations left in place:**
+
+- Up to two frames at the end of each clip are neither trained on with full context nor scored, because windows are not padded (9 frames in val, 35 in test). This matches WASB's evaluation.
+- The 4 px comparison uses `<=`; WASB uses `<`. This only matters at a distance of exactly 4.0.
+- At the source-resolution tolerance (1.6 px at 512x288), ground-truth quantisation of up to 0.29 px is a meaningful share of the budget. If results sit near the boundary, switch that protocol to label coordinates.
+- Mixed resolutions inside one clip are not supported: the source size is read from the first frame.
+- `infer` and `evaluate` assume the default V2 architecture. Checkpoints record their config, but neither command reads it yet; they must before the 12-channel background-frame experiment.
+- Resume is per epoch: an interrupted epoch restarts from its beginning.
+- Training uses game1–6 and validates on game7; WASB trains on game1–7. Test games (game8–10) match WASB's.
 
 **V5 only:** the MDD module does not train from its zero initialisation.
 
@@ -126,15 +133,48 @@ Found in the 2026-11-15 review; none are fixed yet. Details and file references 
 uv sync
 
 # Run the full test suite
-uv run pytest tests/ -v
+uv run pytest tests/ -q -n 4
 
 # Format and lint
 uv run ruff format .
 uv run ruff check --fix .
 
 # Type check
-uv run ty
+uv run ty check
 ```
+
+### Train and evaluate on the tennis dataset
+
+`configs/default.yaml` expects the TrackNet tennis dataset at `datasets/tennis/<game>/<clip>/` (see [docs/data-sources.md](docs/data-sources.md)) and splits it by game: train game1–6, validate on game7, test on game8–10.
+
+```bash
+# Log clip, frame and visibility counts per split and draw labels on sample frames.
+# Open a few overlays: the ball should sit inside the circle in each enlarged crop.
+uv run python main.py check-data --config configs/default.yaml --out /tmp/overlays --count 12
+
+# Train. Writes checkpoints/<experiment_name>/{latest,best}.pt and TensorBoard logs in runs/<experiment_name>/.
+# --max-steps N stops early (the epoch it stops in still validates and checkpoints).
+uv run python main.py train --config configs/default.yaml
+
+# Continue a run from its last checkpoint
+uv run python main.py train --config configs/default.yaml \
+  --resume checkpoints/tennis_v2_baseline/latest.pt
+
+# Evaluate a checkpoint; prints JSON with both protocols. --split defaults to test.
+uv run python main.py evaluate --config configs/default.yaml \
+  --weights checkpoints/tennis_v2_baseline/best.pt --split val
+```
+
+- **Log lines** carry a timestamp; step lines add steps per second and, on a GPU, peak GPU memory; epoch lines add validation F1, precision and recall and separate train and validation seconds.
+- **`train` will not overwrite a run.** If `checkpoints/<experiment_name>/latest.pt` exists, a fresh `train` stops before doing anything: pass `--resume` or set a new `experiment_name`.
+- **Resume is per epoch.** Training continues from the epoch after the checkpoint's. A checkpoint whose epoch was cut short by `--max-steps` logs a warning and the rest of that epoch is skipped. A config that differs from the one stored in the checkpoint (apart from `epochs` and `max_steps`) logs a warning listing the differences.
+- **The config must hold only plain YAML types** (mappings, lists, strings, numbers, booleans, null). Checkpoints store it and are loaded with `weights_only=True`; the Trainer rejects anything else at startup.
+- **Validation during training** uses 4 px at 512x288 only, and `best.pt` is the epoch with the highest `f1` under it. **`evaluate`** reports two protocols, each with both recall conventions:
+  - `model_res_4px`: 4 px at 512x288 (TrackNetV3/V4 and RacketVision).
+  - `source_res_4px`: 4 px at source resolution (WASB), which is 1.6 px at 512x288 for 1280-wide video.
+  - `recall` counts a detection too far from the ball against precision only (TrackNetV3, V4, WASB); `recall_strict` also counts it as a miss (RacketVision).
+- **Label coordinates** are mapped to 512x288 through pixel centres, `x_model = (x_src + 0.5) * 512 / width - 0.5` (and the same for y), the way `cv2.resize` maps pixels; inference maps back with the inverse. Published TrackNet code scales by `x * scale`, which leaves the target 0.3 px off the ball at 1280→512, and horizontal flip reverses that offset.
+- **Tennis visibility 3** rows carry coordinates in the real files but are treated as ball-absent, as in WASB's config.
 
 ### Use the model from Python
 
@@ -165,7 +205,7 @@ uv run python main.py infer \
 
 Outputs a CSV with `Frame, X, Y, Confidence, Visibility` columns and (optionally) an annotated MP4 with ball overlays drawn by [utils/visualization.py](utils/visualization.py).
 
-This command does not yet work with checkpoints produced by the trainer; see [Known Issues](#known-issues).
+`--model` takes a trainer checkpoint (`latest.pt` or `best.pt`) or a bare state dict for the default V2 `TrackNet()`. Frames are converted to RGB, as in training.
 
 ## Dependencies
 
@@ -179,7 +219,7 @@ No `filterpy` — Kalman filter is a small custom NumPy implementation in [infer
 
 See [docs/data-sources.md](docs/data-sources.md) for download links, formats, licences and the verification log (last checked 2026-11-15):
 
-- **Tennis:** TrackNet dataset (~20K frames; NYCU SharePoint or Kaggle)
+- **Tennis:** TrackNet dataset (19,835 frames in 95 clips across 10 games, 1280x720; NYCU SharePoint or Kaggle)
 - **Badminton:** CoachAI shuttlecock dataset (78K frames; NYCU SharePoint, downloadable with curl)
 - **Multi-sport:** RacketVision (AAAI 2026; released April 2026 on Hugging Face). 435K frames, of which 64K carry ball labels
 - **Table tennis:** BlurBall (~64K frames, fixed cameras)
@@ -197,8 +237,8 @@ Most of these state no data licence, and some are explicitly non-commercial. Che
 
 ## Roadmap
 
-1. **Phase 1 — V2 components:** model, data, training, inference pipelines. **Implemented**, with defects listed under Known Issues.
+1. **Phase 1 — V2 components:** model, data, training, inference pipelines and CLI. **Implemented and run end to end on the real tennis dataset** (one epoch).
 2. **Phase 2 — V5 architecture:** MDD module + R-STR head wired through `tracknet_v5()`. **Implemented, training deferred** (see the note under V5 above).
-3. **Phase 3 — First real training run (next):** fix the Known Issues, then train V2 on tennis and report metrics comparable with published ones. First experiment after the baseline: a median background frame as extra input.
+3. **Phase 3 — First real training run (next):** settle where it runs and the batch size (see [Known Issues](#known-issues)), train V2 on tennis for 30 epochs, and report metrics under both protocols. First experiment after the baseline: a median background frame as extra input.
 4. **Phase 4 — Multi-sport and pickleball:** add badminton and multi-sport pre-training; collect and label our own pickleball footage.
 5. **Future:** On-device (iOS) deployment, court detection, shot classification, bounce visualisation, automated scoring. See the specs under `docs/`.

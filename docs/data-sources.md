@@ -26,7 +26,7 @@ Pickleball remains the gap: nothing new and downloadable exists, so it has to be
 | Google Drive (third-party mirror) | https://drive.google.com/drive/folders/11r0RUaQHX7I3ANkaYG4jOxXK1OYo01Ut | `Dataset.zip` 2.39 GB plus `model_best.pt` and a bounce model. Looks like a reimplementation's asset folder, not the original source |
 | NYCU GitLab | https://gitlab.nol.cs.nycu.edu.tw/open-source/TrackNetv2 | Code only, no data, no LICENSE, last commit 2021. README links point to a dead host |
 
-**Format:** 1280x720, 30 fps. Per WASB's loader the label file is `Label.csv` with columns `file name, visibility, x-coordinate, y-coordinate` and NaNs for invisible frames, not our `Frame,Visibility,X,Y` layout. Not yet confirmed against a downloaded copy.
+**Format** (confirmed on the SharePoint `Dataset.zip`, downloaded 2026-11-15): the zip's top-level folder `Dataset/` holds `game1` … `game10`, each with `ClipN/` folders of `NNNN.jpg` frames and one `Label.csv`, plus a `Readme.docx`. 95 clips, 19,835 frames, every image 1280x720. Every `Label.csv` has the header `file name,visibility,x-coordinate,y-coordinate,status` (example row `0000.jpg,1,599,423,0`), not our `Frame,Visibility,X,Y` layout; `data/labels.py` reads both. Visibility takes the values 0, 1, 2 and 3. Visibility 0 rows have empty coordinates; all 82 visibility 3 rows carry coordinates, and we treat them as ball-absent, as WASB does. Every clip is numbered 0000…n-1 with no gaps and one label row per image. Per-split counts are in the [pre-training review](2026-11-15-pre-training-review.md) §4.4.
 
 **Note:** the TrackNetV6 paper's appendix reports that the publicly redistributed copy of this dataset is degraded and every method scores lower on it than in its original publication.
 
@@ -153,7 +153,7 @@ Last verified: **2026-11-15**
 
 | Source | Status | Notes |
 |--------|--------|-------|
-| NYCU SharePoint tennis `Dataset.zip` | Live | HEAD 200, 2,564,111,322 bytes. One transient 503 |
+| NYCU SharePoint tennis `Dataset.zip` | Live, downloaded | HEAD 200, 2,564,111,322 bytes. One transient 503. Downloaded and extracted in full; contents under Tennis above |
 | Kaggle tracknet-tennis | Live | 2,593,200,419 bytes, version 2, last updated 2024-03-01 |
 | Google Drive TrackNet folder | Live | Third-party mirror; files modified Jan–Jul 2023 |
 | NYCU GitLab TrackNetv2 | Live | Code only. Last commit 2021-04-12 |

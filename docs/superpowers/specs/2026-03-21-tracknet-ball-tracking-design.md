@@ -6,17 +6,17 @@
 
 ### Revision summary (2026-11-15)
 
-The pre-training review changed these parts of the design. The code has not caught up yet; the review's §4 lists what must change before the first run.
+The pre-training review changed these parts of the design. The code now implements the revisions to §6, §7, §9, §11 and §13 (the review's §4 gives the commit for each, and its §4.4 the real-data preflight). The V5 revisions to §4 and §5 are not implemented, because V5 is deferred; §1 and §12 are not code changes.
 
-| Section | Change |
-|---|---|
-| §1 | TrackNetV5 now has a self-described official SDK (study-only terms, no weights); independent retrains do not reproduce its numbers |
-| §4, §5 | Our MDD and R-STR differ from the SDK, and MDD does not train from its zero initialisation. V5 is deferred |
-| §6 | Heatmap radius 2.5 px at 512x288, not 30. Loss must be computed in float32 from logits |
-| §7 | First run is V2 on tennis. Training windows slide by 1. Colour jitter is sampled once per window |
-| §9 | Real datasets do not share one CSV layout; labels must be rescaled to 512x288 |
-| §11, §13 | Tolerance is 4 px at 512x288; metric conventions spelled out |
-| §12 | RacketVision released; dataset table and links refreshed |
+| Section | Change | In code |
+|---|---|---|
+| §1 | TrackNetV5 now has a self-described official SDK (study-only terms, no weights); independent retrains do not reproduce its numbers | — |
+| §4, §5 | Our MDD and R-STR differ from the SDK, and MDD does not train from its zero initialisation. V5 is deferred | No (deferred) |
+| §6 | Heatmap radius 2.5 px at 512x288, not 30. Loss must be computed in float32 from logits | Yes |
+| §7 | First run is V2 on tennis. Training windows slide by 1. Colour jitter is sampled once per window | Yes |
+| §9 | Real datasets do not share one CSV layout; labels must be rescaled to 512x288 | Yes, for our layout and the tennis `Label.csv`; rescaling goes through pixel centres. Pickleball not parsed yet |
+| §11, §13 | Tolerance is 4 px at 512x288; metric conventions spelled out | Yes. Both tolerances are reported (4 px at 512x288, and 4 px at source resolution); tail frames are not scored; training uses game1–6 |
+| §12 | RacketVision released; dataset table and links refreshed | — |
 
 ---
 
@@ -241,7 +241,7 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 - `r = 30` pixels for standard resolution (512x288 from 1280x720 native)
 - `r = 40` pixels for higher resolution sources (512x288 from 1920x1080 native)
 - **Revised 2026-11-15: use `r = 2.5` pixels at 512x288.** The values above come from the arXiv TrackNetV5 paper, which has no code or ablation for them. TrackNetV3, V4, WASB and BlurBall all use 2.5 at 512x288; RacketVision uses a Gaussian with sigma 3.5. A 30 px disc is a 60 px-wide blob that must be localised to within 4 px.
-- Label coordinates are in the source video's resolution and must be rescaled to 512x288 before the target is drawn.
+- Label coordinates are in the source video's resolution and must be rescaled to 512x288 before the target is drawn. As implemented, the mapping goes through pixel centres, `x_model = (x_src + 0.5) * (512 / source_width) - 0.5`, the way `cv2.resize` maps pixels, and inference applies the inverse (`data/heatmap.py`). The published TrackNet code scales by `x * scale`, which at 1280→512 leaves the target 0.3 px off the ball.
 - Visibility classes: 0 = not visible (all-zero heatmap), 1 = visible, 2 = partially occluded (still labeled)
 
 ---
@@ -281,7 +281,7 @@ This is a focal-loss-style dynamic weighting (gamma=2) adapted for the TrackNet 
 ### PyTorch Training Optimizations
 
 - **Mixed precision:** Use `torch.amp.autocast("cuda", dtype=torch.bfloat16)`. bf16 is preferred on Ampere GPUs (RTX 3070) — wider dynamic range than fp16, no GradScaler needed.
-- **torch.compile:** Wrap model with `torch.compile(model)` for 1.5-2x speedup. Works well with U-Net (skip connections are standard tensor ops). Use **static input sizes** (512x288) — avoid `dynamic=True`.
+- **torch.compile:** Wrap model with `torch.compile(model)` for 1.5-2x speedup. Works well with U-Net (skip connections are standard tensor ops). Use **static input sizes** (512x288) — avoid `dynamic=True`. Revised 2026-11-15: off by default (`compile_model: false`) because the dev machine has no C compiler; the speed-up is unmeasured there.
 - **Gradient checkpointing:** Use `torch.utils.checkpoint.checkpoint(use_reentrant=False)` on encoder blocks to reduce peak VRAM ~60% at ~25% training time cost. Enable for V5's R-STR Transformer on 8GB GPU.
 - **DataLoader:** Use `pin_memory=True`, `num_workers=4`, `persistent_workers=True`.
 - **Gradient zeroing:** Use `optimizer.zero_grad(set_to_none=True)` for slight memory savings.
@@ -346,7 +346,7 @@ Frame,Visibility,X,Y
 
 This matches the TrackNet convention used by all existing datasets.
 
-**Revised 2026-11-15:** that last sentence is wrong. This is our internal target format; real datasets need conversion. The tennis set's `Label.csv` reportedly uses `file name, visibility, x-coordinate, y-coordinate` with NaNs; the pickleball labels use `Frame,Ball,x,y` with normalised coordinates; RacketVision matches our columns but at 1920x1080 and with labels on every 5th frame only. See [data-sources.md](../../data-sources.md).
+**Revised 2026-11-15:** that last sentence is wrong. This is our internal target format; real datasets need conversion. The tennis set's `Label.csv` uses `file name,visibility,x-coordinate,y-coordinate,status`, with empty coordinates when visibility is 0 and a visibility value 3 that we treat as ball-absent (confirmed on the downloaded files 2026-11-15; `data/labels.py` reads it); the pickleball labels use `Frame,Ball,x,y` with normalised coordinates; RacketVision matches our columns but at 1920x1080 and with labels on every 5th frame only. See [data-sources.md](../../data-sources.md).
 
 ### PyTorch Dataset Class
 
@@ -374,6 +374,7 @@ class TrackNetDataset(Dataset):
 - **Stride = 3** (MIMO): Process frames [0,1,2], then [3,4,5], etc. Each sample produces 3 heatmaps. No overlap, no duplicate predictions per frame. This matches the original TrackNet MIMO design.
 - **Revised 2026-11-15:** stride 3 is for inference only. Training windows slide by 1, as in the TrackNetV3, V4, WASB and RacketVision code: three times as many distinct windows, and each frame is seen in every slot.
 - At video boundaries: pad by duplicating the first/last frame (e.g., frame 0 uses [0,0,1], last frame uses [N-2,N-1,N-1])
+- **Revised 2026-11-15 (as implemented):** training and evaluation windows are not padded. Windows never run past the end of a clip, so up to two tail frames per clip are neither trained on with full context nor scored, as in WASB's evaluation. Only a clip shorter than three frames is padded, by repeating its last frame.
 
 ### Video Loading Strategy
 
@@ -384,6 +385,7 @@ class TrackNetDataset(Dataset):
 
 - **Split by video clip, never by frame.** Random frame splitting causes data leakage (adjacent frames are near-identical).
 - **Convention:** 70% train / 15% val / 15% test, measured by number of video clips
+- **Revised 2026-11-15 (as implemented for tennis):** split by game, not by clip count: train game1–6, validate on game7, test on game8–10 (56 / 9 / 30 clips). The test games match WASB's; WASB has no validation split and trains on game1–7
 - **Cross-sport:** Each sport has its own split. No mixing of sports within a split.
 
 ### Handling "No Ball" Frames
@@ -502,7 +504,7 @@ Video file / Camera feed
 |--------|--------|
 | FPS (RTX 3070) | >30 (real-time at 30fps input) |
 | FPS (RTX 4090) | >100 (3-frame batch processing) |
-| Detection threshold | Euclidean distance <= 4px at 512x288 (revised 2026-11-15; was "original resolution", which contradicted the config. 4 px at 512x288 matches TrackNetV3, V4 and RacketVision; WASB and the arXiv TrackNetV5 paper measure at original resolution) |
+| Detection threshold | Euclidean distance <= 4px at 512x288 (revised 2026-11-15; was "original resolution", which contradicted the config. 4 px at 512x288 matches TrackNetV3, V4 and RacketVision; WASB and the arXiv TrackNetV5 paper measure at original resolution). As implemented, `evaluate` reports both: `model_res_4px` (4 px at 512x288) and `source_res_4px` (4 px at source resolution, 1.6 px at 512x288 for 1280x720 video). Per-epoch validation and best-checkpoint selection use 4 px at 512x288 |
 | Target F1 (tennis) | >0.97 |
 | Target F1 (badminton) | >0.97 |
 | Target F1 (pickleball) | >0.90 (limited data) |
@@ -572,6 +574,15 @@ Revised 2026-11-15.
 - **Accuracy:** (TP + TN) / total frames (including correctly predicted "no ball" frames)
 
 **Revised 2026-11-15 — conventions.** Distances are measured at 512x288. The ground-truth position is the centroid of the target heatmap (as in TrackNetV3's evaluation code), and the prediction is the centroid of the largest connected blob. Published codebases disagree on a detection that is too far from a visible ball: TrackNetV3, V4 and WASB count it as a false positive only, while RacketVision also counts it against recall. Report both so our numbers can be compared with either group.
+
+**As implemented (2026-11-15).** `training/evaluate.py` and `main.py evaluate` do the above, with these specifics:
+
+- **Two tolerances, both reported:** `model_res_4px`, 4 px at 512x288 (TrackNetV3, V4, RacketVision), and `source_res_4px`, 4 px at source resolution (WASB), which is 1.6 px at 512x288 for 1280x720 video. A true positive is a distance `<=` the tolerance; WASB uses `<`.
+- **Both recall conventions** under each tolerance: `recall` = TP / (TP + FN), with far detections (fp1) counted against precision only, and `recall_strict` = TP / (TP + FN + fp1). `f1` and `f1_strict` follow. Per-epoch validation and `best.pt` selection use `f1` at 4 px, 512x288.
+- **Each frame scored once.** Validation and test windows use stride 3 and are not padded, so up to two frames at the end of each clip are not scored (9 frames in tennis val, 35 in test). This matches WASB's evaluation.
+- **Ground truth** is the centroid of the 2.5 px target disc, at most 0.29 px from the label. At the 1.6 px tolerance that is a meaningful share of the budget.
+- **Tennis split:** train game1–6, validate on game7, test on game8–10. The test games match WASB's; WASB trains on game1–7, so our model sees one game fewer.
+- Tennis visibility 3 counts as ball-absent, for the target and the metrics.
 
 ### Tracking Metrics (trajectory-level)
 
