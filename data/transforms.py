@@ -31,6 +31,12 @@ class FrameColorJitter:
     are unchanged. The parameters are sampled once per window, so the jitter
     adds no frame-to-frame (or frame-to-background) colour change that the
     model could mistake for motion.
+
+    A window is jittered with probability ``p`` and otherwise returned
+    unchanged. With ``p`` 1.0 no random number is drawn for that decision.
+
+    Raises:
+        ValueError: If ``p`` is outside [0, 1].
     """
 
     def __init__(
@@ -38,7 +44,11 @@ class FrameColorJitter:
         brightness: float = 0.3,
         contrast: float = 0.3,
         saturation: float = 0.3,
+        p: float = 1.0,
     ) -> None:
+        if not 0.0 <= p <= 1.0:
+            raise ValueError(f"colour-jitter p must be in [0, 1], got {p}")
+        self.p = p
         self.jitter = T.ColorJitter(
             brightness=brightness,
             contrast=contrast,
@@ -48,6 +58,8 @@ class FrameColorJitter:
     def __call__(
         self, frames: torch.Tensor, heatmaps: torch.Tensor
     ) -> FrameHeatmapPair:
+        if self.p < 1.0 and torch.rand(1).item() >= self.p:
+            return frames, heatmaps
         # An (N, 3, H, W) batch: transforms.v2 samples parameters once per call.
         batch = frames.unflatten(0, (-1, 3))
         jittered = self.jitter(batch).clamp(0.0, 1.0)

@@ -414,6 +414,17 @@ def test_resume_reads_keys_a_checkpoint_predates_as_their_old_behaviour(caplog):
     assert "background_frame" not in warnings[0]
 
 
+def test_resume_reads_a_checkpoint_without_color_jitter_as_the_default(caplog):
+    stored = {"seed": 42}  # saved before color_jitter
+    default = {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0}
+    assert _warnings_for(caplog, stored, {"seed": 42, "color_jitter": default}) == []
+
+    changed = {"seed": 42, "color_jitter": default | {"p": 0.5}}
+    warnings = _warnings_for(caplog, stored, changed)
+    assert len(warnings) == 1, warnings
+    assert "color_jitter:" in warnings[0]
+
+
 def test_resume_shows_a_key_the_current_config_lacks_as_none(caplog):
     warnings = _warnings_for(caplog, {"horizontal_flip": True}, {})
     assert len(warnings) == 1, warnings
@@ -455,6 +466,35 @@ def test_train_split_flips_only_when_the_config_says_so(tennis_root, flip):
     kinds = [type(t) for t in cast(Compose, train_clip.transform).transforms]
     assert (HorizontalFlip in kinds) is flip
     assert FrameColorJitter in kinds
+    assert val_clip.transform is None
+
+
+@pytest.mark.parametrize(
+    ("color_jitter", "strength", "p"),
+    [
+        (None, 0.3, 1.0),  # the default config's values
+        ({"brightness": 0.1, "contrast": 0.1, "saturation": 0.1, "p": 0.5}, 0.1, 0.5),
+    ],
+)
+def test_train_split_jitters_with_the_configured_strength_and_p(
+    tennis_root, color_jitter, strength, p
+):
+    config = _config_for(tennis_root)
+    if color_jitter is not None:
+        config["color_jitter"] = color_jitter
+    datasets = _build_datasets(config, ("train", "val"))
+    train_clip = cast(TrackNetDataset, datasets["train"].datasets[0])
+    val_clip = cast(TrackNetDataset, datasets["val"].datasets[0])
+    (jitter,) = [
+        t
+        for t in cast(Compose, train_clip.transform).transforms
+        if isinstance(t, FrameColorJitter)
+    ]
+    expected = pytest.approx((1 - strength, 1 + strength))
+    assert jitter.jitter.brightness == expected
+    assert jitter.jitter.contrast == expected
+    assert jitter.jitter.saturation == expected
+    assert jitter.p == p
     assert val_clip.transform is None
 
 

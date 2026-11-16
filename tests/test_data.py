@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pytest
 import torch
+import torchvision.transforms.v2 as T
 from torch.utils.data import DataLoader
 
 from data.background import background_indices, median_frame
@@ -643,6 +644,48 @@ class TestFrameColorJitter:
         images = out.chunk(4, dim=0)
         assert all(torch.allclose(images[0], image) for image in images[1:])
         assert not torch.allclose(images[0], frame)
+
+    def test_p_zero_returns_frames_unchanged(self):
+        torch.manual_seed(0)
+        jitter = FrameColorJitter(p=0.0)
+        for _ in range(20):
+            frames = torch.rand(9, 32, 64)
+            out, _ = jitter(frames, torch.zeros(3, 32, 64))
+            assert torch.equal(out, frames)
+
+    def test_p_one_is_torchvision_colorjitter_with_no_extra_draw(self):
+        frames = torch.rand(9, 32, 64)
+        torch.manual_seed(3)
+        out, _ = FrameColorJitter(p=1.0)(frames, torch.zeros(3, 32, 64))
+        after = torch.rand(1)
+        torch.manual_seed(3)
+        batch = frames.unflatten(0, (-1, 3))
+        expected = T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3)(batch)
+        assert torch.equal(out, expected.clamp(0.0, 1.0).flatten(0, 1))
+        # The same random-number stream: no draw for the p decision.
+        assert torch.equal(torch.rand(1), after)
+
+    def test_p_half_jitters_about_half_of_the_windows(self):
+        torch.manual_seed(0)
+        jitter = FrameColorJitter(p=0.5)
+        changed = 0
+        for _ in range(200):
+            frames = torch.rand(9, 32, 64)
+            out, _ = jitter(frames, torch.zeros(3, 32, 64))
+            changed += not torch.equal(out, frames)
+        assert 70 <= changed <= 130
+
+    @pytest.mark.parametrize("p", [1.5, -0.1])
+    def test_p_outside_unit_interval_raises(self, p):
+        with pytest.raises(ValueError, match="p"):
+            FrameColorJitter(p=p)
+
+    def test_keeps_its_strengths_and_p(self):
+        jitter = FrameColorJitter(brightness=0.1, contrast=0.2, saturation=0.4, p=0.5)
+        assert jitter.jitter.brightness == pytest.approx((0.9, 1.1))
+        assert jitter.jitter.contrast == pytest.approx((0.8, 1.2))
+        assert jitter.jitter.saturation == pytest.approx((0.6, 1.4))
+        assert jitter.p == 0.5
 
 
 class TestMixup:

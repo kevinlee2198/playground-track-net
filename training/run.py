@@ -81,11 +81,12 @@ def _build_datasets(
 ) -> dict[str, ConcatDataset]:
     """Datasets for the named splits ("train", "val", "test") of ``config["data"]``.
 
-    Train uses ``train_stride`` and colour-jitter augmentation, with a random
-    horizontal flip first when ``horizontal_flip`` is set; val and test use
-    stride 3 and no augmentation. With ``background_frame``, every split's
-    windows carry the clip's median background as a fourth image. With
-    ``skip_empty``, a split with no clips is logged and left out of the result.
+    Train uses ``train_stride`` and the colour jitter ``color_jitter`` sets,
+    with a random horizontal flip first when ``horizontal_flip`` is set; val
+    and test use stride 3 and no augmentation. With ``background_frame``,
+    every split's windows carry the clip's median background as a fourth
+    image. With ``skip_empty``, a split with no clips is logged and left out of
+    the result.
 
     Raises:
         ValueError: If a split has no clips and ``skip_empty`` is false.
@@ -112,7 +113,14 @@ def _build_datasets(
         if split == "train":
             stride = config["train_stride"]
             flip = [HorizontalFlip()] if config["horizontal_flip"] else []
-            transform = Compose([*flip, FrameColorJitter()])
+            jitter = config["color_jitter"]
+            color_jitter = FrameColorJitter(
+                brightness=jitter["brightness"],
+                contrast=jitter["contrast"],
+                saturation=jitter["saturation"],
+                p=jitter["p"],
+            )
+            transform = Compose([*flip, color_jitter])
         else:
             stride, transform = EVAL_STRIDE, None
         datasets[split] = build_dataset(
@@ -189,6 +197,7 @@ _RESTORED_KEYS = ("optimizer", "learning_rate", "weight_decay", "lr_schedule")
 _VALUE_BEFORE_KEY: dict[str, object] = {
     "horizontal_flip": True,
     "background_frame": False,
+    "color_jitter": {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0},
 }
 
 
