@@ -781,7 +781,7 @@ def test_step_loss_logged_every_log_every_steps(caplog):
         ]
         assert len(step_logs) == 4  # 2 epochs x 2 steps, one line per step
         step_line = re.compile(
-            r"Step (\d+) -- loss: \d+\.\d{4}, (\d+\.\d) steps/s"
+            r"Step (\d+) -- loss: \d\.\d{3}e[+-]\d\d, (\d+\.\d) steps/s"
             r"(, peak memory: \d+ MiB)?"
         )
         for step, message in enumerate(step_logs, start=1):
@@ -801,12 +801,33 @@ def test_epoch_log_reports_train_and_validation_time(caplog):
             r.getMessage() for r in caplog.records if r.getMessage().startswith("Epoch")
         ]
         epoch_line = (
-            r"Epoch {}/2 -- loss: \d+\.\d{{4}}, F1: \d\.\d{{4}}, prec: \d\.\d{{4}}, "
-            r"rec: \d\.\d{{4}}, train \d+\.\d s, val \d+\.\d s"
+            r"Epoch {}/2 -- loss: \d\.\d{{3}}e[+-]\d\d, F1: \d\.\d{{4}}, "
+            r"prec: \d\.\d{{4}}, rec: \d\.\d{{4}}, train \d+\.\d s, val \d+\.\d s"
         )
         assert len(epoch_logs) == 2
         for epoch, message in enumerate(epoch_logs, start=1):
             assert re.fullmatch(epoch_line.format(epoch), message), message
+
+
+class TinyConstantLoss(nn.Module):
+    """A loss of 1.23e-5 at every step, about where real training is by epoch 5."""
+
+    def forward(self, logits, target):
+        return logits.sum() * 0 + 1.23e-5
+
+
+def test_small_loss_is_logged_in_scientific_notation(caplog):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"log_every": 1}
+        ds = _make_synthetic_dataset(num_samples=4)
+        with caplog.at_level("INFO", logger="training.trainer"):
+            Trainer(SimpleModel(), TinyConstantLoss(), ds, ds, config).train()
+        messages = [r.getMessage() for r in caplog.records]
+        step_logs = [m for m in messages if m.startswith("Step ")]
+        epoch_logs = [m for m in messages if m.startswith("Epoch ")]
+        assert len(step_logs) == 2 and len(epoch_logs) == 1
+        for message in step_logs + epoch_logs:
+            assert "-- loss: 1.230e-05, " in message, message
 
 
 def test_ensure_compile_supported_reports_failure(monkeypatch):

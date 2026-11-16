@@ -33,6 +33,7 @@ from models import TrackNet, build_model
 from training.run import (
     _build_datasets,
     _source_res_distance,
+    _warn_config_changes,
     load_config,
     run_evaluation,
     run_training,
@@ -316,6 +317,67 @@ def test_resume_says_changed_optimizer_settings_have_no_effect(
     assert warnings[0].endswith(
         "restored from the checkpoint, so these changes have no effect: weight_decay"
     )
+
+
+def test_resume_refuses_to_overwrite_another_experiments_checkpoint(
+    tennis_root, tmp_path
+):
+    def config(name, **overrides):
+        return _fast_training_config(
+            tennis_root, tmp_path, experiment_name=name, **overrides
+        )
+
+    run_training(config("a", epochs=1, max_steps=2))
+    run_training(config("b", epochs=1, max_steps=2))
+    checkpoints = tmp_path / "checkpoints"
+    latest_a, latest_b = (
+        checkpoints / "a" / "latest.pt",
+        checkpoints / "b" / "latest.pt",
+    )
+    before = latest_b.read_bytes()
+
+    with pytest.raises(FileExistsError) as err:
+        run_training(config("b", epochs=2, max_steps=4), resume=latest_a)
+    assert str(latest_b) in str(err.value)
+    assert str(latest_a) in str(err.value)
+    assert "experiment_name" in str(err.value)
+    assert latest_b.read_bytes() == before  # untouched
+
+    # An experiment with no checkpoint yet may start from another run's.
+    run_training(config("c", epochs=2, max_steps=4), resume=latest_a)
+    checkpoint = torch.load(checkpoints / "c" / "latest.pt", weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+
+    # Its own latest.pt, named through a symlink, is the same file.
+    link = tmp_path / "link.pt"
+    link.symlink_to(latest_a)
+    run_training(config("a", epochs=2, max_steps=4), resume=link)
+    checkpoint = torch.load(latest_a, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+
+
+def _warnings_for(caplog, stored: dict, current: dict) -> list[str]:
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        _warn_config_changes(stored, current)
+    return _config_change_warnings(caplog)
+
+
+def test_resume_reads_keys_a_checkpoint_predates_as_their_old_behaviour(caplog):
+    stored = {"seed": 42}  # saved before horizontal_flip and background_frame
+    current = {"seed": 42, "horizontal_flip": True, "background_frame": False}
+    assert _warnings_for(caplog, stored, current) == []
+
+    warnings = _warnings_for(caplog, stored, current | {"horizontal_flip": False})
+    assert len(warnings) == 1, warnings
+    assert "horizontal_flip: True -> False" in warnings[0]
+    assert "background_frame" not in warnings[0]
+
+
+def test_resume_shows_a_key_the_current_config_lacks_as_none(caplog):
+    warnings = _warnings_for(caplog, {"horizontal_flip": True}, {})
+    assert len(warnings) == 1, warnings
+    assert "horizontal_flip: True -> None" in warnings[0]
 
 
 def test_cli_log_lines_carry_timestamp_level_and_logger(tennis_root, tmp_path):

@@ -292,7 +292,7 @@ class Trainer:
         if self.device.type == "cuda":
             peak_mib = torch.cuda.max_memory_allocated(self.device) / 2**20
             logger.info(
-                "Step %d -- loss: %.4f, %.1f steps/s, peak memory: %.0f MiB",
+                "Step %d -- loss: %.3e, %.1f steps/s, peak memory: %.0f MiB",
                 self.global_step,
                 mean_loss,
                 steps_per_s,
@@ -300,7 +300,7 @@ class Trainer:
             )
         else:
             logger.info(
-                "Step %d -- loss: %.4f, %.1f steps/s",
+                "Step %d -- loss: %.3e, %.1f steps/s",
                 self.global_step,
                 mean_loss,
                 steps_per_s,
@@ -445,7 +445,7 @@ class Trainer:
             )
 
             logger.info(
-                "Epoch %d/%d -- loss: %.4f, F1: %.4f, prec: %.4f, rec: %.4f, "
+                "Epoch %d/%d -- loss: %.3e, F1: %.4f, prec: %.4f, rec: %.4f, "
                 "train %.1f s, val %.1f s",
                 self.current_epoch,
                 epochs,
