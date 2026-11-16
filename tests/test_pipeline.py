@@ -149,8 +149,7 @@ def test_evaluation_of_bare_state_dict_has_no_background_frame(
     tennis_root, tmp_path, caplog
 ):
     config = _fast_training_config(tennis_root, tmp_path, background_frame=True)
-    weights = tmp_path / "weights.pt"
-    torch.save(TrackNet().state_dict(), weights)
+    weights = _default_weights(tmp_path)
 
     with caplog.at_level(logging.INFO, logger="training.run"):
         result = run_evaluation(config, weights, split="val")
