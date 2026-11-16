@@ -81,7 +81,7 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
     assert ckpt.exists()
 
-    result = run_evaluation(config, ckpt, split="val")
+    result = run_evaluation(config, ckpt, split="test")
     assert result["frames"] == 6
     for protocol in ("model_res_4px", "source_res_4px"):
         m = result[protocol]
@@ -93,7 +93,7 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
         [
             "infer",
             "--video",
-            str(tennis_root / "game2" / "Clip1"),
+            str(tennis_root / "game3" / "Clip1"),
             "--model",
             str(ckpt),
             "--output",
