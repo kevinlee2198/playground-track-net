@@ -431,35 +431,36 @@ def _warnings_for(caplog, stored: dict, current: dict) -> list[str]:
     return _config_change_warnings(caplog)
 
 
-def test_resume_reads_keys_a_checkpoint_predates_as_their_old_behaviour(caplog):
-    stored = {"seed": 42}  # saved before horizontal_flip and background_frame
-    current = {"seed": 42, "horizontal_flip": True, "background_frame": False}
+# What the code did before each of these config keys existed.
+_OLD_BEHAVIOUR = {
+    "horizontal_flip": True,
+    "background_frame": False,
+    "color_jitter": {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0},
+    "mixup_alpha": 0.0,
+}
+
+
+@pytest.mark.parametrize(
+    ("key", "new"),
+    [
+        ("horizontal_flip", False),
+        ("background_frame", True),
+        ("color_jitter", _OLD_BEHAVIOUR["color_jitter"] | {"p": 0.5}),
+        ("mixup_alpha", 0.5),
+    ],
+)
+def test_resume_reads_a_key_a_checkpoint_predates_as_its_old_behaviour(
+    caplog, key, new
+):
+    stored = {"seed": 42}  # saved before any of these keys
+    current = {"seed": 42} | _OLD_BEHAVIOUR
     assert _warnings_for(caplog, stored, current) == []
 
-    warnings = _warnings_for(caplog, stored, current | {"horizontal_flip": False})
+    warnings = _warnings_for(caplog, stored, current | {key: new})
     assert len(warnings) == 1, warnings
-    assert "horizontal_flip: True -> False" in warnings[0]
-    assert "background_frame" not in warnings[0]
-
-
-def test_resume_reads_a_checkpoint_without_color_jitter_as_the_default(caplog):
-    stored = {"seed": 42}  # saved before color_jitter
-    default = {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0}
-    assert _warnings_for(caplog, stored, {"seed": 42, "color_jitter": default}) == []
-
-    changed = {"seed": 42, "color_jitter": default | {"p": 0.5}}
-    warnings = _warnings_for(caplog, stored, changed)
-    assert len(warnings) == 1, warnings
-    assert "color_jitter:" in warnings[0]
-
-
-def test_resume_reads_a_checkpoint_without_mixup_alpha_as_mixup_off(caplog):
-    stored = {"seed": 42}  # saved before mixup_alpha
-    assert _warnings_for(caplog, stored, {"seed": 42, "mixup_alpha": 0.0}) == []
-
-    warnings = _warnings_for(caplog, stored, {"seed": 42, "mixup_alpha": 0.5})
-    assert len(warnings) == 1, warnings
-    assert "mixup_alpha: 0.0 -> 0.5" in warnings[0]
+    assert f"{key}: {_OLD_BEHAVIOUR[key]!r} -> {new!r}" in warnings[0]
+    for other in _OLD_BEHAVIOUR.keys() - {key}:
+        assert other not in warnings[0]
 
 
 def test_resume_shows_a_key_the_current_config_lacks_as_none(caplog):

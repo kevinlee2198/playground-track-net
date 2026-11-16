@@ -164,12 +164,12 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
                 "experiment_name to start a new one"
             )
         source, target = Path(resume).resolve(), latest.resolve()
-        if source.parent == target.parent and source != target:
-            raise FileExistsError(
-                f"continuing from {resume} would replace this run's own {latest}: "
-                "set a new experiment_name to branch a new run from it"
-            )
         if source != target:
+            if source.parent == target.parent:
+                raise FileExistsError(
+                    f"continuing from {resume} would replace this run's own "
+                    f"{latest}: set a new experiment_name to branch a new run from it"
+                )
             raise FileExistsError(
                 f"{latest} already exists and resuming from {resume} would "
                 "overwrite it: use the config whose experiment_name matches that "

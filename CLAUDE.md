@@ -9,7 +9,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
 - `uv sync` — install deps
-- `uv run pytest tests/ -q -n 4` — run all tests (361 tests, 60–80 s; serial `-v` takes about as long)
+- `uv run pytest tests/ -q -n 4` — run all tests (362 tests, 60–80 s; serial `-v` takes about as long)
 - `uv run ruff format .` — format code
 - `uv run ruff check --fix .` — lint and auto-fix
 - `uv run ty check` — type check (12 pre-existing diagnostics as of 2026-11-15)
