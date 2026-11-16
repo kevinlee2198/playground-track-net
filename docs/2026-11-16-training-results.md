@@ -11,6 +11,8 @@ Protocols, as `evaluate` reports them: `model_res_4px` counts a detection within
 | `tennis_v2_baseline` | none (configs/default.yaml at f759052) | 20 | 0.949 | 0.771 |
 | `tennis_v2_noflip` | `horizontal_flip: false` | running; epoch 4 | 0.922 | 0.864 |
 | `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | planned | planned | planned |
+| `tennis_v2_mixup` | `mixup_alpha: 0.5` on top of `tennis_v2_noflip` | planned | planned | planned |
+| `tennis_v2_jitter` | `color_jitter` 0.1 at p 0.5 on top of `tennis_v2_noflip` | planned | planned | planned |
 
 ## 2. Baseline
 
@@ -113,10 +115,21 @@ Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) is planned. It differs from `tenn
 
 The script for this check is not in the repository.
 
-## 6. Small things noticed
+## 6. Mixup and colour-jitter strength
 
-- The training loss is logged with four decimals and reads `0.0000` from epoch 5 on.
+Runs `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml) and `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml) are planned and not started. Each changes one setting from `tennis_v2_noflip`, as `tennis_v2_bg` does, so all three planned runs are compared against the same run: `tennis_v2_noflip`'s final numbers.
+
+**Mixup.** `mixup_alpha: 0.5` mixes each training batch before the forward pass; validation is not mixed. Each sample draws a weight `lam` from Beta(0.5, 0.5), keeps `max(lam, 1 - lam)`, and is blended with a partner chosen by one random permutation of the batch, frames and heatmaps alike. This is TrackNetV3's sample mixup; their ablation reports +0.29 F1 from it ([pre-training review](2026-11-15-pre-training-review.md) §3.3). Two things are known before training:
+
+- With batch size 2, the permutation leaves the batch as it is half the time, so about half the batches are not mixed.
+- The mixed heatmaps are soft targets: at a sample's own ball the target is `lam`, between 0.5 and 1. This loss's per-pixel optimum for a soft target is pulled towards 0.5: a target of 0.75 is best fit by a prediction of 0.60. TrackNetV3 trains with the same loss and the same behaviour.
+
+**Colour-jitter strength.** `tennis_v2_jitter` uses WASB's strength, 0.1 brightness, contrast and saturation applied to half the windows (`p: 0.5`), against ours: 0.3, applied to every window. Either way one draw covers every image in a window.
+
+## 7. Small things noticed
+
+- The training loss is logged with four decimals and reads `0.0000` from epoch 5 on. Fixed: it is now logged in scientific notation.
 - `evaluate` builds its ground-truth position from the centroid of the target disc rather than from the label, which moves a few frames across the 1.6 px line (1,107 true positives against 1,099 when scored on label coordinates).
-- Resuming a checkpoint made before `horizontal_flip` existed warns `horizontal_flip: None -> True`, although that run did flip.
-- Resuming a checkpoint made before `background_frame` existed warns `background_frame: None -> False`, although nothing changed.
+- Resuming a checkpoint made before `horizontal_flip` existed warns `horizontal_flip: None -> True`, although that run did flip. Fixed: a key the checkpoint predates is compared using the value the code used before the key existed.
+- Resuming a checkpoint made before `background_frame` existed warns `background_frame: None -> False`, although nothing changed. Fixed in the same way.
 - A test wrote to the default checkpoint directory and failed once a real run existed there (fixed with the flip switch).
