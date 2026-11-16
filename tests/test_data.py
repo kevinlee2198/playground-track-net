@@ -139,15 +139,12 @@ class TestTargetAlignsWithResizedBall:
         assert torch.equal(heatmaps[0], generate_heatmap(x, y, visibility=1))
 
     def test_target_centred_on_resized_ball_after_flip(self, disc_clip):
-        frames, heatmaps = TrackNetDataset(*disc_clip, transform=HorizontalFlip(p=1.0))[
-            0
-        ]
+        dataset = TrackNetDataset(*disc_clip, transform=HorizontalFlip(p=1.0))
+        frames, heatmaps = dataset[0]
         x, y = self._mapped_label()
         ball_x, ball_y = _intensity_centroid(frames[:3])
-        assert abs(ball_x - (511 - x)) < 0.05 and abs(ball_y - y) < 0.05, (
-            ball_x,
-            ball_y,
-        )
+        assert abs(ball_x - (511 - x)) < 0.05, ball_x  # mirrored: x -> 511 - x
+        assert abs(ball_y - y) < 0.05, ball_y
         flipped = generate_heatmap(x, y, visibility=1).flip(-1)
         assert torch.equal(heatmaps[0], flipped)
 

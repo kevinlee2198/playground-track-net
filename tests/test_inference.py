@@ -92,7 +92,7 @@ class TestHeatmapToCoordinates:
         result = heatmap_to_coordinates(heatmap, orig_width=1280, orig_height=720)
         assert result is not None
         x, y, confidence = result
-        # Centroid (256, 144) in source pixels: (256 + 0.5) * 1280 / 512 - 0.5, ...
+        # Model pixel (256, 144) in source pixels: x = (256 + 0.5) * 1280 / 512 - 0.5
         expected_x = 640.75
         expected_y = 360.75
         assert abs(x - expected_x) < 5.0
