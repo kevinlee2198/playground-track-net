@@ -304,12 +304,12 @@ def write_label_overlays(
 ) -> list[Path]:
     """Write PNGs of visible-ball labels drawn on their frames, for a human to check.
 
-    The datasets are built as for training, except that no background frame
-    is computed, so a clip that would break training raises here with the
-    same error. ``count`` visible-ball frames are
-    shared out across the train, val and test splits in turn (each split gets one
-    before any gets two) and evenly spaced within each split; if the splits hold
-    fewer, all of them are written. Each PNG shows the frame at model resolution
+    The datasets are built as for training, so a clip that would break training
+    raises here with the same error. The one exception: no background frame is
+    computed, so a frame that only the background would fail to read is not
+    caught. ``count`` visible-ball frames are shared out across the train, val
+    and test splits in turn (each split gets one before any gets two) and evenly
+    spaced within each split; if the splits hold fewer, all of them are written. Each PNG shows the frame at model resolution
     with a hollow circle at the rescaled label, beside a 4x enlargement of the
     64x64 region centred on the label. Files are named
     ``<split>_<game>_<clip>_<frame>.png``.
