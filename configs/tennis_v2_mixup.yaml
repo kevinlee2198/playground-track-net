@@ -1,0 +1,8 @@
+# TrackNet V2 on tennis with TrackNetV3's sample mixup on training batches.
+# Differs from tennis_v2_noflip only by mixup_alpha.
+# Every key not set here comes from tennis_v2_noflip.yaml and default.yaml.
+
+base: tennis_v2_noflip.yaml
+
+mixup_alpha: 0.5
+experiment_name: tennis_v2_mixup

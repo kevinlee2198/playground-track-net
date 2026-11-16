@@ -1,0 +1,12 @@
+# TrackNet V2 on tennis with WASB's colour-jitter strength: 0.1 at p 0.5.
+# Differs from tennis_v2_noflip only by color_jitter.
+# Every key not set here comes from tennis_v2_noflip.yaml and default.yaml.
+
+base: tennis_v2_noflip.yaml
+
+color_jitter:
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.1
+  p: 0.5
+experiment_name: tennis_v2_jitter
