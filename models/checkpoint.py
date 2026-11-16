@@ -35,11 +35,7 @@ def load_model(path: str | Path, device: torch.device) -> tuple[TrackNet, dict |
     Raises:
         RuntimeError: If the weights do not fit the architecture built.
     """
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
-    if "model_state_dict" in checkpoint:
-        state_dict, config = checkpoint["model_state_dict"], checkpoint.get("config")
-    else:
-        state_dict, config = checkpoint, None
+    state_dict, config = _read_checkpoint(path, device)
     model = build_model(config)
     model.load_state_dict(state_dict)
     return model.to(device), config
@@ -57,6 +53,16 @@ def load_model_weights(
     Raises:
         RuntimeError: If the weights do not fit ``model``'s architecture.
     """
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    state_dict, _config = _read_checkpoint(path, device)
     model.load_state_dict(state_dict)
+
+
+def _read_checkpoint(
+    path: str | Path, device: torch.device
+) -> tuple[dict, dict | None]:
+    """The weights at ``path`` and the config stored beside them, or None for a
+    bare state dict."""
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    if "model_state_dict" in checkpoint:
+        return checkpoint["model_state_dict"], checkpoint.get("config")
+    return checkpoint, None

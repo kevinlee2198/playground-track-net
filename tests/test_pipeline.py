@@ -115,6 +115,14 @@ def _background_warnings(caplog) -> list[str]:
     ]
 
 
+def _trainer_checkpoint(tmp_path, config: dict) -> Path:
+    path = tmp_path / "latest.pt"
+    torch.save(
+        {"model_state_dict": build_model(config).state_dict(), "config": config}, path
+    )
+    return path
+
+
 @pytest.mark.parametrize("trained_with", [True, None])  # None: saved before the key
 def test_evaluation_follows_the_checkpoints_background_frame(
     tennis_root, tmp_path, caplog, trained_with
@@ -123,11 +131,7 @@ def test_evaluation_follows_the_checkpoints_background_frame(
     stored = {k: v for k, v in config.items() if k != "background_frame"}
     if trained_with is not None:
         stored["background_frame"] = trained_with
-    checkpoint = tmp_path / "latest.pt"
-    torch.save(
-        {"model_state_dict": build_model(stored).state_dict(), "config": stored},
-        checkpoint,
-    )
+    checkpoint = _trainer_checkpoint(tmp_path, stored)
     trained = bool(trained_with)
     config["background_frame"] = not trained
 
@@ -143,11 +147,7 @@ def test_evaluation_follows_the_checkpoints_background_frame(
 
 def test_evaluation_of_matching_checkpoint_does_not_warn(tennis_root, tmp_path, caplog):
     config = _fast_training_config(tennis_root, tmp_path, background_frame=True)
-    checkpoint = tmp_path / "latest.pt"
-    torch.save(
-        {"model_state_dict": build_model(config).state_dict(), "config": config},
-        checkpoint,
-    )
+    checkpoint = _trainer_checkpoint(tmp_path, config)
     with caplog.at_level(logging.INFO, logger="training.run"):
         assert run_evaluation(config, checkpoint, split="val")["frames"] == 6
     assert _background_warnings(caplog) == []

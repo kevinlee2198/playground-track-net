@@ -805,12 +805,17 @@ class TestBuildModel:
 
     def test_default_is_initialised_like_tracknet(self):
         torch.manual_seed(0)
-        expected = TrackNet().state_dict()
+        expected = TrackNet()
         torch.manual_seed(0)
-        built = build_model({"background_frame": False}).state_dict()
-        assert built.keys() == expected.keys()
-        for key, value in expected.items():
-            assert torch.equal(built[key], value), key
+        built = build_model({"background_frame": False})
+        assert built.state_dict().keys() == expected.state_dict().keys()
+        _assert_same_weights(built, expected)
+
+
+def _assert_same_weights(actual: nn.Module, expected: nn.Module) -> None:
+    actual_state = actual.state_dict()
+    for key, value in expected.state_dict().items():
+        assert torch.equal(actual_state[key], value), key
 
 
 def _first_conv_channels(model: TrackNet) -> int:
@@ -827,8 +832,7 @@ class TestLoadModel:
         model, stored = load_model(path, torch.device("cpu"))
         assert stored == config
         assert _first_conv_channels(model) == 12
-        for key, value in saved.state_dict().items():
-            assert torch.equal(model.state_dict()[key], value), key
+        _assert_same_weights(model, saved)
 
     def test_bare_state_dict_builds_the_default(self, tmp_path):
         saved = TrackNet()
@@ -838,5 +842,4 @@ class TestLoadModel:
         model, stored = load_model(path, torch.device("cpu"))
         assert stored is None
         assert _first_conv_channels(model) == 9
-        for key, value in saved.state_dict().items():
-            assert torch.equal(model.state_dict()[key], value), key
+        _assert_same_weights(model, saved)
