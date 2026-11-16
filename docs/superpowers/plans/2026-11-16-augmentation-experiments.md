@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, PyTorch, torchvision.transforms.v2, pytest; `uv run` for everything.
 
-**Spec:** `docs/2026-11-15-pre-training-review.md` §3.3 (reference recipes) and §5 items 6 (mixup) and 8 (colour jitter); `docs/2026-11-16-training-results.md` §6 (small things noticed).
+**Spec:** `docs/2026-11-15-pre-training-review.md` §3.3 (reference recipes) and §5 items 6 (mixup) and 8 (colour jitter); `docs/2026-11-16-training-results.md`, "Small things noticed" (§6 when this plan was written, §7 since).
 
 ## Global Constraints
 
