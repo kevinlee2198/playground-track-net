@@ -83,7 +83,9 @@ def mixup_batch(
 
     The random numbers come from torch's global generator, drawn on the CPU,
     so ``torch.manual_seed`` covers them whatever device the batch is on.
-    Outputs have the inputs' shape, dtype and device.
+    These draws advance that generator, so a run with mixup on does not share
+    the later sample order (from the second epoch) of the same-seed run with
+    it off. Outputs have the inputs' shape, dtype and device.
 
     Raises:
         ValueError: If ``alpha`` is not above 0.

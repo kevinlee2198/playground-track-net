@@ -703,11 +703,11 @@ _DEVICES = [
 ]
 
 
-def _constant_batch(batch: int) -> FrameHeatmapPair:
+def _constant_batch(batch: int, channels: int = 9) -> FrameHeatmapPair:
     """Sample ``i`` filled with ``i`` in its frames and ``i * i`` in its
     heatmaps, so the weight and partner of each mix can be solved for."""
     values = torch.arange(batch, dtype=torch.float32).view(-1, 1, 1, 1)
-    frames = values.expand(batch, 9, 8, 16).clone()
+    frames = values.expand(batch, channels, 8, 16).clone()
     heatmaps = (values**2).expand(batch, 3, 8, 16).clone()
     return frames, heatmaps
 
@@ -727,9 +727,10 @@ class TestMixupBatch:
             assert out.device == given.device
 
     @pytest.mark.parametrize("seed", range(5))
-    def test_each_sample_mixes_with_one_partner_by_one_weight(self, seed):
+    @pytest.mark.parametrize("channels", [9, 12])
+    def test_each_sample_mixes_with_one_partner_by_one_weight(self, seed, channels):
         batch = 6
-        frames, heatmaps = _constant_batch(batch)
+        frames, heatmaps = _constant_batch(batch, channels)
         torch.manual_seed(seed)
         out_frames, out_heatmaps = mixup_batch(frames, heatmaps, alpha=0.5)
         partners = []
