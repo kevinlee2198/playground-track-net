@@ -457,13 +457,14 @@ def test_resume_through_symlinked_checkpoint_directory(
         tennis_root, tmp_path, checkpoint_dir="checkpoints", epochs=1, max_steps=2
     )
     run_training(config)
-    assert (real / "e2e" / "latest.pt").is_file()
+    latest = real / "e2e" / "latest.pt"
+    assert latest.is_file()
 
     def passed_the_guard(config, splits):
         raise _PassedTheGuard
 
     monkeypatch.setattr("training.run._build_datasets", passed_the_guard)
-    for resume in (Path("checkpoints/e2e/latest.pt"), real / "e2e" / "latest.pt"):
+    for resume in (Path("checkpoints/e2e/latest.pt"), latest):
         with pytest.raises(_PassedTheGuard):
             run_training(config, resume=resume)
     with pytest.raises(FileExistsError, match="--resume"):
