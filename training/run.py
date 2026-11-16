@@ -213,15 +213,14 @@ def checkpoint_background(
 ) -> bool:
     """Whether to give the model at ``weights`` a background frame.
 
-    ``stored`` is the config ``load_model`` returned for ``weights``. When
-    there is one, its ``background_frame`` decides (false if the key is
-    absent: the checkpoint predates it), with a warning if ``config`` says
-    otherwise; for a bare state dict ``config`` decides.
+    ``stored`` is the config ``load_model`` returned for ``weights``. The
+    checkpoint decides, with a warning if ``config`` says otherwise: its
+    stored ``background_frame`` (false if the key is absent: the checkpoint
+    predates it), or false for a bare state dict (None), which ``load_model``
+    builds as the default 9-channel model.
     """
     configured = config["background_frame"]
-    if stored is None:
-        return configured
-    trained = bool(stored.get("background_frame", False))
+    trained = bool(stored and stored.get("background_frame", False))
     if trained != configured:
         logger.warning(
             "%s was trained with background_frame=%s; the config says %s. "
@@ -240,8 +239,8 @@ def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
     ``model_res_4px`` measures in heatmap pixels at model resolution,
     ``source_res_4px`` in pixels of the source video.
 
-    The model is built as ``weights`` was trained (see ``load_model``), and a
-    trainer checkpoint's ``background_frame`` overrides the config's (see
+    The model is built as ``weights`` was trained (see ``load_model``), and
+    the checkpoint's ``background_frame`` overrides the config's (see
     ``checkpoint_background``).
 
     Returns:
