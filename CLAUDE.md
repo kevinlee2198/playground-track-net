@@ -53,8 +53,8 @@ Datasets (links, licences, verification log): docs/data-sources.md
 ## Status (2026-11-16)
 - First full run done: `tennis_v2_baseline` (default recipe, 30 epochs, 5.7 h on this laptop). Validation (game7): F1 0.949 at 4 px, 512x288; 0.771 at 4 px of the source. Nothing has been evaluated on the test split.
 - Splits (configs/default.yaml): train game1–6, val game7, test game8–10. WASB trains on game1–7, so say so beside any comparison. Leave the test split alone until a model is final.
-- The baseline's predictions sit 1.1 px left of the labels on the validation game, caused by the flip augmentation (results doc §3–§4). Run `tennis_v2_noflip` (configs/tennis_v2_noflip.yaml) has no such offset at epoch 4; its final numbers are pending.
-- Median background frame: the code exists (`background_frame: true`, 12 input channels). Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml: the no-flip recipe plus the background frame) is planned, not started (results doc §5).
+- The baseline's predictions sit 1.1 px left of the labels on the validation game, caused by the flip augmentation (results doc §3–§4). Run `tennis_v2_noflip` (configs/tennis_v2_noflip.yaml, done) has no such offset (−0.01 px): validation F1 at its best epoch (15) is 0.947 at 4 px, 512x288 and 0.903 at 4 px of the source. Later experiments are compared with it. `configs/default.yaml` still has the flip on, so it reproduces the baseline; whether the default should change is open.
+- Median background frame: the code exists (`background_frame: true`, 12 input channels). Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml: the no-flip recipe plus the background frame) was started on 2026-11-16 at 18:24 from a worktree at commit 0dd09a4; its results are pending (results doc §5).
 - Still open (review doc §5): batch size and learning rate, mixup, jitter strength, `torch.compile` speed. Mixup and jitter strength are now config switches (`mixup_alpha`, `color_jitter`; the defaults train as before), with runs `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml) and `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml, WASB's 0.1 at p 0.5) planned, not started (results doc §6).
 - V5 is deferred.
 

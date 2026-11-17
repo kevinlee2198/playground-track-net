@@ -9,8 +9,8 @@ Protocols, as `evaluate` reports them: `model_res_4px` counts a detection within
 | Run | Change from the baseline | Best epoch | F1 `model_res_4px` | F1 `source_res_4px` |
 |---|---|---|---|---|
 | `tennis_v2_baseline` | none (configs/default.yaml at f759052) | 20 | 0.949 | 0.771 |
-| `tennis_v2_noflip` | `horizontal_flip: false` | running; epoch 4 | 0.922 | 0.864 |
-| `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | planned | planned | planned |
+| `tennis_v2_noflip` | `horizontal_flip: false` | 15 | 0.947 | 0.903 |
+| `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | running since 2026-11-16 18:24 | pending | pending |
 | `tennis_v2_mixup` | `mixup_alpha: 0.5` on top of `tennis_v2_noflip` | planned | planned | planned |
 | `tennis_v2_jitter` | `color_jitter` 0.1 at p 0.5 on top of `tennis_v2_noflip` | planned | planned | planned |
 
@@ -77,7 +77,7 @@ Four measurements. The first three are on the baseline's `best.pt`; 1, 2 and 4 u
 1. **The offset exists only on the validation game.** On un-augmented training clips (every 12th window of game1–6, 1,044 detections) the mean horizontal error is +0.14 px.
 2. **Mirroring the validation frames removes it.** With the input flipped left to right, and the labels flipped to match, the mean horizontal error on game7 is +0.08 px instead of −1.07 (every 2nd window, about 800 detections). On the training games mirroring changes little (+0.06).
 3. **The labels are not on the ball, in any of game1–7.** Without any model: crop the source frame around each label, remove the background with the median of the six neighbouring frames, and take the centroid of the moving blob. For a still ball at the centre of the frame, the blob is 1.3–1.7 px left of and 1.0–1.7 px above the label in each of the seven games (game7: −1.50, −1.32 source px). At 512x288 that is about 0.6 px. Two further effects sit on top of the constant and roughly average out over a clip. In five games the label runs ahead of a moving ball by 0.11–0.18 px for each px/frame of speed, which is 1–1.5 px either way at typical speeds; in game4 and game5 that slope is under 0.03. A flip does not disturb this, because it mirrors the ball's direction too. And in game4 and game6 the offset drifts across the frame: −1.3 and −2.6 px per 1,000 px horizontally, −1.4 and −1.2 vertically.
-4. **Without the flip, the offset is gone.** After 4 epochs of `tennis_v2_noflip`, the mean horizontal error on game7 is +0.09 px (760 detections), and +1.23 with mirrored input. Its `source_res_4px` F1 at that point is already 0.864, against 0.771 for the finished baseline; `model_res_4px` is 0.922, level with the baseline's 0.924 at the same epoch. Two things this does not show: the baseline's offset at epoch 4 (no checkpoint was kept), and whether the no-flip model stays near zero through epoch 30 (pending).
+4. **Without the flip, the offset is gone.** After 4 epochs of `tennis_v2_noflip`, the mean horizontal error on game7 is +0.09 px (760 detections), and +1.23 with mirrored input. Its `source_res_4px` F1 at that point is already 0.864, against 0.771 for the finished baseline; `model_res_4px` is 0.922, level with the baseline's 0.924 at the same epoch. This does not show the baseline's offset at epoch 4 (no checkpoint was kept). The finished run stays at zero: on its `best.pt` (epoch 15) the mean horizontal error on game7 is −0.01 px (1,584 detections) and +1.14 with mirrored input; on the training games (every 12th window, 1,049 detections) it is +0.02 and +1.25.
 
 The same numbers as horizontal position relative to the ball, at 512x288, taking the label to be 0.58 px right of the ball, which is game7's mean offset in measurement 3 (1.45 source px; the training games' means are 0.45–0.69 px):
 
@@ -86,8 +86,10 @@ The same numbers as horizontal position relative to the ball, at 512x288, taking
 | Baseline (flip) | training games | +0.72 | −0.52 |
 | Baseline (flip) | game7 | −0.50 | −0.50 |
 | No flip, epoch 4 | game7 | +0.67 | +0.65 |
+| No flip, best (epoch 15) | training games | +0.60 | +0.67 |
+| No flip, best (epoch 15) | game7 | +0.57 | +0.56 |
 
-**What this establishes.** The labels carry a constant offset from where the ball appears. A model trained without the flip learns it as a fixed rule, "0.6 px right of the ball", and the rule carries over to a game it has not seen (third row). The vertical offset is the control: mirroring left to right does not touch it, and both models reproduce it on game7 (vertical error 0.00 and −0.08). The flip mirrors the horizontal offset in half the training windows, so the right answer becomes "right of the ball" in some windows and "left of it" in others.
+**What this establishes.** The labels carry a constant offset from where the ball appears. A model trained without the flip learns it as a fixed rule, "0.6 px right of the ball", and the rule carries over to a game it has not seen (the no-flip rows on game7). The vertical offset is the control: mirroring left to right does not touch it, and both models reproduce it on game7 (vertical error 0.00 and −0.08). The flip mirrors the horizontal offset in half the training windows, so the right answer becomes "right of the ball" in some windows and "left of it" in others.
 
 **What is not explained.** On training frames the baseline gets both cases right (first row). Having seen each frame about 30 times, the simplest account is that it memorised them, not that it reads the orientation from the scene. On game7 it puts the ball 0.5 px to the left whichever way the input faces (second row). A model that simply could not tell would be expected to settle on the ball itself; why this one settles on the mirrored rule is not known.
 
@@ -95,14 +97,33 @@ The same numbers as horizontal position relative to the ball, at 512x288, taking
 
 **Two ways to fix it:**
 
-- **Turn the flip off** (`horizontal_flip: false`). No assumption about the size of the offset; costs one augmentation. This is run `tennis_v2_noflip`; measurement 4 is its early result and §1 will carry its final numbers.
+- **Turn the flip off** (`horizontal_flip: false`). No assumption about the size of the offset; costs one augmentation. This is run `tennis_v2_noflip`; its final numbers follow.
 - **Keep the flip and move the labels onto the ball** by subtracting the measured offset when labels are loaded. Keeps the augmentation, and `infer` would then report the ball's visual centre. It depends on the offset estimate, departs from the published label convention, and corrects only the constant part: the drift across the frame in game4 and game6 is also mirrored by a flip.
+
+**The no-flip run, finished.** The baseline's recipe with `horizontal_flip: false` (configs/tennis_v2_noflip.yaml), same seed. 30 epochs, 182,490 steps, 5.9 hours from start to finish (most epochs took 653–681 s; five took 700–881 s while tests and analysis shared the GPU), peak GPU memory 1,769 MiB, no warning or error in the log.
+
+| Checkpoint | Protocol | Precision | Recall | F1 | TP | TN | FP wrong place | FP no ball | FN |
+|---|---|---|---|---|---|---|---|---|---|
+| best (epoch 15) | `model_res_4px` | 0.952 | 0.942 | 0.947 | 1,581 | 115 | 33 | 46 | 97 |
+| best (epoch 15) | `source_res_4px` | 0.872 | 0.937 | 0.903 | 1,447 | 115 | 167 | 46 | 97 |
+| latest (epoch 30) | `model_res_4px` | 0.964 | 0.913 | 0.938 | 1,535 | 133 | 29 | 28 | 147 |
+| latest (epoch 30) | `source_res_4px` | 0.887 | 0.906 | 0.896 | 1,412 | 133 | 152 | 28 | 147 |
+
+- **At the source-resolution tolerance, F1 goes from 0.771 to 0.903.** Detections more than 1.6 px from the label fall from 515 to 167. This is what shifting the baseline's predictions after the fact predicted in §3 (0.906).
+- **At 4 px, 512x288, the two runs are level:** 0.947 against 0.949, which is 13 fewer correct detections in 1,872 frames. With one seed each and one validation game, that is not a difference to read anything into, in either direction.
+- **Localisation** (`scripts/analysis/val_errors.py`, against the label coordinates, as in §3): the median distance from the label is 0.76 px (baseline 1.30) and the 90th percentile 1.57 (2.16); 90.4% of detections on a visible ball are within 1.6 px (67.8%). The mean error is −0.01 px horizontally and +0.03 vertically, with a spread of 0.71 and 0.76 px. Fitting a shift now gains nothing (F1 0.9073 to 0.9077 by that script's count).
+- **Detection is about where the baseline's was.** Clearly visible balls are detected 95.4% of the time (96.0%) and hard-to-see balls 73.8% (71.4%). There are 46 false alarms on frames without a labelled ball (55) and 97 misses (89), 79 of them with a heatmap peak between 0.1 and 0.5. The detection threshold is again flat around the default: 0.946 at 0.4, 0.947 at 0.5, 0.946 at 0.6.
+- **Learning curve (`model_res_4px` F1 per epoch):** 0.764 after epoch 1, 0.922 at epoch 4, 0.938 at epoch 8, the best 0.947 at epoch 15 and 0.946 at epoch 19. After the learning-rate drop at epoch 20 it sits at 0.937–0.944, ending at 0.938 with precision 0.96 and recall 0.91. As with the baseline, the last ten epochs bought nothing on this metric.
+
+Not done for this run: the failing frames were not cropped and sorted as in §3, so whether rackets and players are still the main failure is assumed, not checked.
+
+`tennis_v2_noflip` is the run the later experiments are compared with. `configs/default.yaml` still has the flip on, so it still reproduces the baseline; whether the default should change is open.
 
 **For the app:** a model trained without the flip reports positions in the label convention, about 1.5 source px right of and 1.4 px below the ball as it appears. An overlay should subtract that.
 
 ## 5. The median background frame
 
-Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) is planned. It differs from `tennis_v2_noflip` by one key, `background_frame: true`, so the comparison is with that run's final numbers.
+Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) was started on 2026-11-16 at 18:24 and its results are pending. It differs from `tennis_v2_noflip` by one key, `background_frame: true`, so the comparison is with that run's final numbers.
 
 **The input.** For each clip, the per-pixel median of up to 50 evenly spaced frames, at model resolution, is appended to every window as a fourth RGB image (12 input channels). A moving ball is in few of those frames at any one place, so the median leaves it out. Players who stand still through a short clip partly remain in it: in the background image of game7 Clip8 (55 frames, 54 of them scored) both players are visible.
 
@@ -117,7 +138,7 @@ The script for this check is not in the repository.
 
 ## 6. Mixup and colour-jitter strength
 
-Runs `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml) and `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml) are planned and not started. Each changes one setting from `tennis_v2_noflip`, as `tennis_v2_bg` does, so all three planned runs are compared against the same run: `tennis_v2_noflip`'s final numbers.
+Runs `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml) and `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml) are planned and not started. Each changes one setting from `tennis_v2_noflip`, as `tennis_v2_bg` does, so all three runs are compared against the same run: `tennis_v2_noflip`'s final numbers (§4).
 
 **Mixup.** `mixup_alpha: 0.5` mixes each training batch before the forward pass; validation is not mixed. Each sample draws a weight `lam` from Beta(0.5, 0.5), keeps `max(lam, 1 - lam)`, and is blended with a partner chosen by one random permutation of the batch, frames and heatmaps alike. This is TrackNetV3's sample mixup; their ablation (Table 2) reports F1 rising from 97.44% to 97.73% when it is added, +0.29 percentage points, on their badminton shuttlecock dataset and with the background image already in the input ([pre-training review](2026-11-15-pre-training-review.md) §3.3). `tennis_v2_mixup` has no background image, so it is not the same comparison. Three things are known before training:
 
