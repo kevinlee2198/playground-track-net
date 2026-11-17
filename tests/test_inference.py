@@ -69,6 +69,24 @@ class TestCreateSlidingWindows:
         assert len(windows) == 1
         assert windows[0].shape == (9, 288, 512)
 
+    def test_background_follows_the_frames_in_every_window(self):
+        frames = [np.full((3, 72, 128), i, dtype=np.float32) for i in range(5)]
+        background = np.random.default_rng(0).random((3, 72, 128), dtype=np.float32)
+        windows = create_sliding_windows(frames, background=background)
+        plain = create_sliding_windows(frames)
+        assert len(windows) == len(plain) == 2
+        for window, without in zip(windows, plain, strict=True):
+            assert window.shape == (12, 72, 128)
+            np.testing.assert_array_equal(window[:9], without)
+            np.testing.assert_array_equal(window[9:], background)
+
+    def test_no_background_leaves_windows_unchanged(self):
+        frames = [np.full((3, 72, 128), i, dtype=np.float32) for i in range(5)]
+        windows = create_sliding_windows(frames, background=None)
+        assert [w.shape for w in windows] == [(9, 72, 128)] * 2
+        np.testing.assert_array_equal(windows[1][:3], frames[3])
+        np.testing.assert_array_equal(windows[1][6:], frames[4])  # padded at the end
+
 
 class TestExtractFrames:
     def test_extract_from_image_directory(self, tmp_path):

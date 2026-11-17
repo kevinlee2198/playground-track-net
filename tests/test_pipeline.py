@@ -20,12 +20,16 @@ from data import (
     FrameColorJitter,
     HorizontalFlip,
     TrackNetDataset,
+    background_indices,
     build_dataset,
     discover_tennis_clips,
     generate_heatmap,
+    median_frame,
     source_to_model,
 )
+from inference.video_preprocess import extract_frames
 from main import build_parser, run_inference
+from models import TrackNet, build_model
 from training.run import (
     _build_datasets,
     _source_res_distance,
@@ -71,8 +75,11 @@ def _fast_training_config(tennis_root, tmp_path, **overrides):
     )
 
 
-def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
-    config = _fast_training_config(tennis_root, tmp_path, epochs=1, max_steps=2)
+@pytest.mark.parametrize("background", [False, True])
+def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
+    config = _fast_training_config(
+        tennis_root, tmp_path, epochs=1, max_steps=2, background_frame=background
+    )
     run_training(config)
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
     assert ckpt.exists()
@@ -99,6 +106,124 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
+
+
+class _RecordingModel(nn.Module):
+    """Records every input it is given and finds no ball."""
+
+    def __init__(self):
+        super().__init__()
+        self.inputs: list[torch.Tensor] = []
+
+    def forward(self, x):
+        self.inputs.append(x.cpu())
+        b, _, h, w = x.shape
+        return torch.zeros(b, 3, h, w, device=x.device)
+
+
+def test_inference_appends_the_videos_median_background(tmp_path, monkeypatch):
+    # A fixed scene with a bright square that moves every frame: its median is
+    # the scene, which zeros, the first frame or the mean would not match.
+    rng = np.random.default_rng(0)
+    scene = rng.integers(0, 200, (72, 128, 3), dtype=np.uint8)
+    video = tmp_path / "frames"
+    video.mkdir()
+    for i in range(7):
+        img = scene.copy()
+        img[20:28, 8 + 16 * i : 16 + 16 * i] = 255
+        cv2.imwrite(str(video / f"{i:04d}.png"), img)
+    model = _RecordingModel()
+    # run_inference imports load_model from models when it runs.
+    monkeypatch.setattr(
+        "models.load_model", lambda path, device: (model, {"background_frame": True})
+    )
+    args = build_parser().parse_args(
+        [
+            "infer",
+            "--video",
+            str(video),
+            "--model",
+            str(tmp_path / "unused.pt"),
+            "--output",
+            str(tmp_path / "pred.csv"),
+        ]
+    )
+    run_inference(args)
+
+    frames, _ = extract_frames(str(video))
+    background = median_frame(frames[i] for i in background_indices(len(frames)))
+    assert not np.allclose(background, frames[0])
+    assert not np.allclose(background, np.mean(frames, axis=0))
+    assert len(model.inputs) == 3  # frames 0-2, 3-5 and 6 padded with itself
+    for k, x in enumerate(model.inputs):
+        assert x.shape == (1, 12, 288, 512)
+        window = [frames[min(3 * k + j, len(frames) - 1)] for j in range(3)]
+        assert torch.equal(x[0, :9], torch.from_numpy(np.concatenate(window))), k
+        assert torch.equal(x[0, 9:], torch.from_numpy(background)), k
+
+
+def _background_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "training.run"
+        and r.levelname == "WARNING"
+        and "background_frame" in r.getMessage()
+    ]
+
+
+def _trainer_checkpoint(tmp_path, config: dict) -> Path:
+    path = tmp_path / "latest.pt"
+    torch.save(
+        {"model_state_dict": build_model(config).state_dict(), "config": config}, path
+    )
+    return path
+
+
+@pytest.mark.parametrize("trained_with", [True, None])  # None: saved before the key
+def test_evaluation_follows_the_checkpoints_background_frame(
+    tennis_root, tmp_path, caplog, trained_with
+):
+    config = _fast_training_config(tennis_root, tmp_path)
+    stored = {k: v for k, v in config.items() if k != "background_frame"}
+    if trained_with is not None:
+        stored["background_frame"] = trained_with
+    checkpoint = _trainer_checkpoint(tmp_path, stored)
+    trained = bool(trained_with)
+    config["background_frame"] = not trained
+
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        result = run_evaluation(config, checkpoint, split="val")
+    assert result["frames"] == 6
+    assert config["background_frame"] is not trained  # the caller's dict is untouched
+    assert _background_warnings(caplog) == [
+        f"{checkpoint} was trained with background_frame={trained}; the config "
+        f"says {not trained}. Using the checkpoint's value."
+    ]
+
+
+def test_evaluation_of_bare_state_dict_has_no_background_frame(
+    tennis_root, tmp_path, caplog
+):
+    config = _fast_training_config(tennis_root, tmp_path, background_frame=True)
+    weights = _default_weights(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        result = run_evaluation(config, weights, split="val")
+    assert result["frames"] == 6
+    assert _background_warnings(caplog) == [
+        f"{weights} is a bare state dict, loaded as the 9-channel model; the "
+        "config says background_frame=True. Using no background frame."
+    ]
+    assert "was trained with" not in caplog.text  # its training config is unknown
+
+
+def test_evaluation_of_matching_checkpoint_does_not_warn(tennis_root, tmp_path, caplog):
+    config = _fast_training_config(tennis_root, tmp_path, background_frame=True)
+    checkpoint = _trainer_checkpoint(tmp_path, config)
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        assert run_evaluation(config, checkpoint, split="val")["frames"] == 6
+    assert _background_warnings(caplog) == []
 
 
 def test_fresh_run_refuses_to_overwrite_existing_checkpoint(tennis_root, tmp_path):
@@ -135,6 +260,24 @@ def test_resume_into_existing_run_is_allowed(tennis_root, tmp_path, caplog):
     assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
     # Only epochs and max_steps changed, and those are meant to change on resume.
     assert _config_change_warnings(caplog) == []
+
+
+def test_resume_of_background_run(tennis_root, tmp_path):
+    run_training(
+        _fast_training_config(
+            tennis_root, tmp_path, epochs=1, max_steps=2, background_frame=True
+        )
+    )
+    latest = tmp_path / "checkpoints" / "e2e" / "latest.pt"
+
+    config = _fast_training_config(
+        tennis_root, tmp_path, epochs=2, max_steps=4, background_frame=True
+    )
+    run_training(config, resume=latest)
+    checkpoint = torch.load(latest, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+    first_conv = checkpoint["model_state_dict"]["backbone.down1.conv1.conv.weight"]
+    assert first_conv.shape[1] == 12
 
 
 def test_resume_with_unchanged_config_does_not_warn(tennis_root, tmp_path, caplog):
@@ -213,6 +356,17 @@ def test_train_split_flips_only_when_the_config_says_so(tennis_root, flip):
     assert val_clip.transform is None
 
 
+@pytest.mark.parametrize("background", [False, True])
+def test_background_frame_adds_channels_to_every_split(tennis_root, background):
+    config = _config_for(tennis_root) | {"background_frame": background}
+    datasets = _build_datasets(config, ("train", "val"))
+    channels = 12 if background else 9
+    for split in ("train", "val"):
+        frames, heatmaps = datasets[split][0]
+        assert frames.shape == (channels, 288, 512), split
+        assert heatmaps.shape == (3, 288, 512), split
+
+
 def test_unknown_data_format_raises(tennis_root, tmp_path):
     # Output paths under tmp_path: the default ones may hold a real run.
     config = _fast_training_config(tennis_root, tmp_path) | {
@@ -222,18 +376,26 @@ def test_unknown_data_format_raises(tennis_root, tmp_path):
         run_training(config)
 
 
+def _default_weights(tmp_path) -> Path:
+    """A bare state dict of the default model: evaluation reads its weights
+    before it builds the split."""
+    path = tmp_path / "weights.pt"
+    torch.save(TrackNet().state_dict(), path)
+    return path
+
+
 def test_evaluation_rejects_mixed_source_sizes(tennis_root, tmp_path):
     for frame in (tennis_root / "game3" / "Clip1").glob("*.jpg"):
         cv2.imwrite(str(frame), np.zeros((360, 640, 3), dtype=np.uint8))
     config = _config_for(tennis_root, val_groups=[], test_groups=["game2", "game3"])
     with pytest.raises(ValueError, match="source size"):
-        run_evaluation(config, tmp_path / "unused.pt", split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test")
 
 
 def test_evaluation_rejects_aspect_ratio_change(tennis_root, tmp_path):
     config = _config_for(tennis_root) | {"input_size": [128, 128]}
     with pytest.raises(ValueError, match="aspect ratio"):
-        run_evaluation(config, tmp_path / "unused.pt", split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test")
 
 
 def test_source_resolution_threshold_is_4px_of_the_source(tennis_root):
@@ -272,7 +434,9 @@ def test_evaluation_protocols_disagree_between_their_thresholds(
         writer = csv.writer(f)
         writer.writerow(["file name", "visibility", "x-coordinate", "y-coordinate"])
         writer.writerows((f"{i:04d}.jpg", 1, 640, 360) for i in range(6))
-    monkeypatch.setattr("training.run.TrackNet", _BallOffBy3pxModel)
+    monkeypatch.setattr(
+        "models.checkpoint.build_model", lambda config=None: _BallOffBy3pxModel()
+    )
     weights = tmp_path / "weights.pt"
     torch.save(_BallOffBy3pxModel().state_dict(), weights)
     config = _config_for(tennis_root) | {"num_workers": 0, "pin_memory": False}
@@ -428,6 +592,16 @@ def test_check_data_reports_clip_with_frame_gap(tennis_root, tmp_path, caplog):
     assert str(clip_dir) in warnings[0] and "2 to 4" in warnings[0], warnings
 
 
+def test_check_data_computes_no_background(tennis_root, tmp_path, monkeypatch):
+    def no_median(frames):
+        raise AssertionError("check-data computed a background")
+
+    monkeypatch.setattr("data.dataset.median_frame", no_median)
+    config = _config_for(tennis_root) | {"background_frame": True}
+    assert len(write_label_overlays(config, tmp_path, count=3)) == 3
+    assert config["background_frame"] is True  # the caller's dict is untouched
+
+
 def test_training_rejects_empty_val_split(tennis_root, tmp_path):
     config = _fast_training_config(tennis_root, tmp_path) | {
         "data": _config_for(tennis_root, val_groups=[])["data"]
@@ -440,7 +614,7 @@ def test_training_rejects_empty_val_split(tennis_root, tmp_path):
 def test_evaluation_rejects_empty_split(tennis_root, tmp_path):
     config = _config_for(tennis_root, test_groups=[])
     with pytest.raises(ValueError, match=r"test split.*data\.test_groups"):
-        run_evaluation(config, tmp_path / "unused.pt", split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test")
 
 
 def test_check_data_skips_empty_split(tennis_root, tmp_path, caplog):

@@ -131,20 +131,26 @@ def run_inference(args: argparse.Namespace) -> None:
     orig_h = metadata["original_height"]
     print(f"Extracted {len(frames)} frames ({orig_w}x{orig_h})")
 
-    # 2. Create sliding windows
-    windows = create_sliding_windows(frames, window_size=3, stride=3)
-    print(f"Created {len(windows)} sliding windows")
-
-    # 3. Load model
+    # 2. Load the model as it was trained
     import torch
 
     print(f"Loading model from {args.model}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    from models import TrackNet, load_model_weights
+    from models import load_model
 
-    model = TrackNet()
-    load_model_weights(model, args.model, device)
-    model.to(device)
+    model, stored = load_model(args.model, device)
+
+    # 3. Create sliding windows, each with the video's median background frame
+    # after its three frames if the model was trained with one
+    background = None
+    if frames and stored is not None and stored.get("background_frame", False):
+        from data import background_indices, median_frame
+
+        background = median_frame(frames[i] for i in background_indices(len(frames)))
+    windows = create_sliding_windows(
+        frames, window_size=3, stride=3, background=background
+    )
+    print(f"Created {len(windows)} sliding windows")
 
     # 4. Run inference on each window
     all_detections: list[tuple[float, float, float] | None] = []

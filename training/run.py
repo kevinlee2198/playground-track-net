@@ -27,7 +27,7 @@ from data import (
     split_clips,
     visibility_counts,
 )
-from models import TrackNet, WBCEFocalLoss, load_model_weights
+from models import WBCEFocalLoss, build_model, load_model
 from training.evaluate import OUTCOMES, evaluate_epoch
 from training.trainer import Trainer, experiment_dir
 
@@ -38,8 +38,42 @@ DISTANCE_PX = 4.0  # true-positive distance of both evaluation protocols
 
 
 def load_config(path: str | Path) -> dict:
+    """The YAML config at ``path``, merged over its base config if it names one.
+
+    A top-level ``base: <path>``, relative to the directory of the file that
+    names it, loads that config first, by the same rules, and merges this
+    file's keys over it: a dict value merges key by key into the base's dict,
+    any other value replaces the base's. The result has no ``base`` key.
+
+    Raises:
+        ValueError: If following the ``base`` keys leads back to a file
+            already on the chain.
+    """
+    return _load_config(Path(path), ())
+
+
+def _load_config(path: Path, chain: tuple[Path, ...]) -> dict:
     with open(path) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    if not isinstance(config, dict) or "base" not in config:
+        return config
+    chain = (*chain, path.resolve())
+    base_path = path.parent / config.pop("base")
+    if base_path.resolve() in chain:
+        names = " -> ".join(str(p) for p in (*chain, base_path.resolve()))
+        raise ValueError(f"config base chain forms a cycle: {names}")
+    return _merge(_load_config(base_path, chain), config)
+
+
+def _merge(base: dict, override: dict) -> dict:
+    """``base`` with ``override``'s keys merged over it: dicts merge key by key."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _build_datasets(
@@ -49,8 +83,9 @@ def _build_datasets(
 
     Train uses ``train_stride`` and colour-jitter augmentation, with a random
     horizontal flip first when ``horizontal_flip`` is set; val and test use
-    stride 3 and no augmentation. With ``skip_empty``, a split with no
-    clips is logged and left out of the result.
+    stride 3 and no augmentation. With ``background_frame``, every split's
+    windows carry the clip's median background as a fourth image. With
+    ``skip_empty``, a split with no clips is logged and left out of the result.
 
     Raises:
         ValueError: If a split has no clips and ``skip_empty`` is false.
@@ -87,6 +122,7 @@ def _build_datasets(
             height=height,
             width=width,
             transform=transform,
+            background=config["background_frame"],
         )
         logger.info(
             "%s: %d clips, %d windows", split, len(clips[split]), len(datasets[split])
@@ -95,7 +131,7 @@ def _build_datasets(
 
 
 def run_training(config: dict, resume: str | Path | None = None) -> None:
-    """Train ``TrackNet()`` on the train split, validating on the val split.
+    """Train ``build_model(config)`` on the train split, validating on the val split.
 
     ``config`` must hold only plain YAML types: the trainer stores it in every
     checkpoint. With ``resume``, training continues from that checkpoint.
@@ -117,7 +153,7 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
     # The model is initialised before the Trainer seeds, so seed it here too.
     torch.manual_seed(config["seed"])
     trainer = Trainer(
-        TrackNet(), WBCEFocalLoss(), datasets["train"], datasets["val"], config
+        build_model(config), WBCEFocalLoss(), datasets["train"], datasets["val"], config
     )
     if resume is not None:
         _warn_config_changes(trainer.load_checkpoint(str(resume)), config)
@@ -172,12 +208,49 @@ def _source_res_distance(dataset: ConcatDataset, width: int, height: int) -> flo
     return DISTANCE_PX * width / source_width
 
 
+def checkpoint_background(
+    config: dict, stored: dict | None, weights: str | Path
+) -> bool:
+    """Whether to give the model at ``weights`` a background frame.
+
+    ``stored`` is the config ``load_model`` returned for ``weights``. For a
+    trainer checkpoint its ``background_frame`` decides (false if the key is
+    absent: the checkpoint predates it), with a warning if ``config`` says
+    otherwise. A bare state dict (``stored`` None) has no training config;
+    ``load_model`` builds it as the default 9-channel model, so the answer is
+    false, with a warning if ``config`` says true.
+    """
+    configured = config["background_frame"]
+    if stored is None:
+        if configured:
+            logger.warning(
+                "%s is a bare state dict, loaded as the 9-channel model; the "
+                "config says background_frame=True. Using no background frame.",
+                weights,
+            )
+        return False
+    trained = bool(stored.get("background_frame", False))
+    if trained != configured:
+        logger.warning(
+            "%s was trained with background_frame=%s; the config says %s. "
+            "Using the checkpoint's value.",
+            weights,
+            trained,
+            configured,
+        )
+    return trained
+
+
 def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
     """Evaluate ``weights`` on the "val" or "test" split under two protocols.
 
     Both count a detection within 4 px of the label as a true positive:
     ``model_res_4px`` measures in heatmap pixels at model resolution,
     ``source_res_4px`` in pixels of the source video.
+
+    The model is built as ``weights`` was trained (see ``load_model``), and
+    the checkpoint's ``background_frame`` overrides the config's (see
+    ``checkpoint_background``).
 
     Returns:
         {"split", "frames": frames scored, "model_res_4px": metrics,
@@ -188,17 +261,16 @@ def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
         ValueError: If the split's clips differ in source size or the resize
             to ``input_size`` changes their aspect ratio.
     """
-    dataset = _build_datasets(config, (split,))[split]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, stored = load_model(weights, device)
+    background = checkpoint_background(config, stored, weights)
+    datasets = _build_datasets(config | {"background_frame": background}, (split,))
+    dataset = datasets[split]
     width, height = config["input_size"]
     distances = {
         "model_res_4px": DISTANCE_PX,
         "source_res_4px": _source_res_distance(dataset, width, height),
     }
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrackNet()
-    load_model_weights(model, weights, device)
-    model.to(device)
     loader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
@@ -232,11 +304,12 @@ def write_label_overlays(
 ) -> list[Path]:
     """Write PNGs of visible-ball labels drawn on their frames, for a human to check.
 
-    The datasets are built exactly as for training, so a clip that would break
-    training raises here with the same error. ``count`` visible-ball frames are
-    shared out across the train, val and test splits in turn (each split gets one
-    before any gets two) and evenly spaced within each split; if the splits hold
-    fewer, all of them are written. Each PNG shows the frame at model resolution
+    The datasets are built as for training, so a clip that would break training
+    raises here with the same error. The one exception: no background frame is
+    computed, so a frame that only the background would fail to read is not
+    caught. ``count`` visible-ball frames are shared out across the train, val
+    and test splits in turn (each split gets one before any gets two) and evenly
+    spaced within each split; if the splits hold fewer, all of them are written. Each PNG shows the frame at model resolution
     with a hollow circle at the rescaled label, beside a 4x enlargement of the
     64x64 region centred on the label. Files are named
     ``<split>_<game>_<clip>_<frame>.png``.
@@ -252,7 +325,12 @@ def write_label_overlays(
         frame order.
     """
     candidates: dict[str, list[tuple[TrackNetDataset, int]]] = {}
-    for split, dataset in _build_datasets(config, SPLITS, skip_empty=True).items():
+    # No background: the counts and overlays never read it, and it decodes up
+    # to 50 frames per clip.
+    datasets = _build_datasets(
+        config | {"background_frame": False}, SPLITS, skip_empty=True
+    )
+    for split, dataset in datasets.items():
         clips = [cast(TrackNetDataset, d) for d in dataset.datasets]
         visibility: Counter[int] = Counter()
         for clip in clips:

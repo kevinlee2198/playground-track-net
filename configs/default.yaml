@@ -2,6 +2,7 @@
 
 # Model input and target
 input_size: [512, 288]
+background_frame: false  # append each clip's median background as a fourth image
 heatmap_radius: 2.5
 
 # Optimizer: AdamW (decoupled weight decay) or Adam (weight_decay is an L2 penalty)

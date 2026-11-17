@@ -22,9 +22,9 @@ from scipy import ndimage
 from torch.utils.data import DataLoader
 
 from data import TrackNetDataset, source_to_model
-from models import TrackNet, load_model_weights
+from models import load_model
 from training.evaluate import aggregate_metrics, classify_frame
-from training.run import _build_datasets, load_config
+from training.run import _build_datasets, checkpoint_background, load_config
 
 THRESHOLDS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 NEAR_PX = 10.0  # a detection further than this from the label is on something else
@@ -114,11 +114,11 @@ def is_near(row: dict) -> bool:
 def score_frames(config: dict, weights: str) -> tuple[list[dict], dict[float, Counter]]:
     """One row per validation frame, plus 4 px outcome counts per threshold."""
     width, height = config["input_size"]
-    val = _build_datasets(config, ("val",))["val"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrackNet()
-    load_model_weights(model, weights, device)
-    model.to(device).eval()
+    model, stored = load_model(weights, device)
+    model.eval()
+    background = checkpoint_background(config, stored, weights)
+    val = _build_datasets(config | {"background_frame": background}, ("val",))["val"]
 
     rows: list[dict] = []
     sweep = {threshold: Counter() for threshold in THRESHOLDS}

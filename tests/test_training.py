@@ -21,6 +21,7 @@ from training.evaluate import (
     evaluate_epoch,
     heatmap_to_position,
 )
+from training.run import load_config
 from training.trainer import Trainer, ensure_compile_supported
 
 
@@ -166,6 +167,53 @@ def test_config_loads_from_yaml():
     assert config["seed"] == 42
     assert config["checkpoint_dir"] == "checkpoints"
     assert config["log_dir"] == "runs"
+
+
+def test_load_config_merges_over_its_base(tmp_path):
+    (tmp_path / "base.yaml").write_text(
+        "epochs: 30\nlr_schedule: {milestones: [20, 25], gamma: 0.1}\n"
+    )
+    (tmp_path / "exp.yaml").write_text(
+        "base: base.yaml\nepochs: 5\nlr_schedule: {gamma: 0.5}\n"
+    )
+    assert load_config(tmp_path / "exp.yaml") == {
+        "epochs": 5,
+        "lr_schedule": {"milestones": [20, 25], "gamma": 0.5},
+    }
+
+
+def test_load_config_follows_a_chain_of_bases(tmp_path):
+    (tmp_path / "a.yaml").write_text("x: a\ny: a\nz: a\n")
+    (tmp_path / "sub").mkdir()
+    # A base path is relative to the file that names it.
+    (tmp_path / "sub" / "b.yaml").write_text("base: ../a.yaml\ny: b\nz: b\n")
+    (tmp_path / "c.yaml").write_text("base: sub/b.yaml\nz: c\n")
+    assert load_config(tmp_path / "c.yaml") == {"x": "a", "y": "b", "z": "c"}
+
+
+def test_load_config_rejects_a_base_cycle(tmp_path):
+    (tmp_path / "a.yaml").write_text("base: b.yaml\nx: 1\n")
+    (tmp_path / "b.yaml").write_text("base: a.yaml\ny: 2\n")
+    with pytest.raises(ValueError, match="base.*cycle"):
+        load_config(tmp_path / "a.yaml")
+
+
+def test_noflip_config_is_the_default_with_two_overrides():
+    configs = pathlib.Path(__file__).parent.parent / "configs"
+    default = load_config(configs / "default.yaml")
+    noflip = load_config(configs / "tennis_v2_noflip.yaml")
+    assert noflip == default | {
+        "horizontal_flip": False,
+        "experiment_name": "tennis_v2_noflip",
+    }
+
+
+def test_bg_config_is_the_noflip_config_with_two_overrides():
+    configs = pathlib.Path(__file__).parent.parent / "configs"
+    noflip = load_config(configs / "tennis_v2_noflip.yaml")
+    bg = load_config(configs / "tennis_v2_bg.yaml")
+    assert bg == noflip | {"background_frame": True, "experiment_name": "tennis_v2_bg"}
+    assert bg["horizontal_flip"] is False
 
 
 # ---------------------------------------------------------------------------

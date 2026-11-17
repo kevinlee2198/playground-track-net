@@ -85,7 +85,10 @@ def _extract_from_video(video_path: Path) -> tuple[list[np.ndarray], dict]:
 
 
 def create_sliding_windows(
-    frames: list[np.ndarray], window_size: int = 3, stride: int = 3
+    frames: list[np.ndarray],
+    window_size: int = 3,
+    stride: int = 3,
+    background: np.ndarray | None = None,
 ) -> list[np.ndarray]:
     """Create sliding windows of concatenated frames with boundary padding.
 
@@ -96,9 +99,12 @@ def create_sliding_windows(
         frames: List of preprocessed frames, each shape (C, H, W).
         window_size: Number of frames per window.
         stride: Step between window start indices.
+        background: Optional (C, H, W) image appended to every window after
+            its frames, such as the clip's median background frame.
 
     Returns:
-        List of concatenated frame windows, each shape (C*window_size, H, W).
+        List of concatenated frame windows, each shape (C*window_size, H, W),
+        or (C*(window_size + 1), H, W) with a background.
     """
     n = len(frames)
     if n == 0:
@@ -114,6 +120,8 @@ def create_sliding_windows(
             elif idx >= n:
                 idx = n - 1
             window_frames.append(frames[idx])
+        if background is not None:
+            window_frames.append(background)
         concatenated = np.concatenate(window_frames, axis=0)
         windows.append(concatenated)
     return windows

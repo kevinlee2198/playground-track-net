@@ -24,10 +24,13 @@ class HorizontalFlip:
 
 
 class FrameColorJitter:
-    """Apply one torchvision ColorJitter draw to all three frames. Heatmaps unchanged.
+    """Apply one torchvision ColorJitter draw to every RGB image in the window.
 
-    The parameters are sampled once per window, so the jitter adds no
-    frame-to-frame colour change that the model could mistake for motion.
+    ``frames`` holds any number of RGB images stacked on the channel axis: the
+    three frames, and the background when the dataset appends one. Heatmaps
+    are unchanged. The parameters are sampled once per window, so the jitter
+    adds no frame-to-frame (or frame-to-background) colour change that the
+    model could mistake for motion.
     """
 
     def __init__(
@@ -45,8 +48,8 @@ class FrameColorJitter:
     def __call__(
         self, frames: torch.Tensor, heatmaps: torch.Tensor
     ) -> FrameHeatmapPair:
-        # A (3, 3, H, W) batch: transforms.v2 samples parameters once per call.
-        batch = frames.unflatten(0, (3, 3))
+        # An (N, 3, H, W) batch: transforms.v2 samples parameters once per call.
+        batch = frames.unflatten(0, (-1, 3))
         jittered = self.jitter(batch).clamp(0.0, 1.0)
         return jittered.flatten(0, 1), heatmaps
 

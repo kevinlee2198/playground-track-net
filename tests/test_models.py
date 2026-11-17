@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from models import build_model, load_model
 from models.backbone import ConvBlock, DownBlock, Bottleneck, UpBlock, UNetBackbone
 from models.losses import WBCEFocalLoss
 from models.rstr import FactorizedAttentionLayer, RSTRHead, TSATTHead
@@ -788,3 +789,57 @@ class TestV5Integration:
         # Only the first conv layer should differ (9ch -> 13ch)
         assert len(mismatches) == 1, f"Expected 1 mismatch, got: {mismatches}"
         assert "down1.conv1.conv.weight" in mismatches[0]
+
+
+class TestBuildModel:
+    @pytest.mark.parametrize("config", [None, {}, {"background_frame": False}])
+    def test_default_takes_three_frames(self, config):
+        model = build_model(config).eval()
+        with torch.no_grad():
+            assert model(torch.rand(1, 9, 72, 128)).shape == (1, 3, 72, 128)
+
+    def test_background_frame_adds_a_fourth_image(self):
+        model = build_model({"background_frame": True}).eval()
+        with torch.no_grad():
+            assert model(torch.rand(1, 12, 72, 128)).shape == (1, 3, 72, 128)
+
+    def test_default_is_initialised_like_tracknet(self):
+        torch.manual_seed(0)
+        expected = TrackNet()
+        torch.manual_seed(0)
+        built = build_model({"background_frame": False})
+        assert built.state_dict().keys() == expected.state_dict().keys()
+        _assert_same_weights(built, expected)
+
+
+def _assert_same_weights(actual: nn.Module, expected: nn.Module) -> None:
+    actual_state = actual.state_dict()
+    for key, value in expected.state_dict().items():
+        assert torch.equal(actual_state[key], value), key
+
+
+def _first_conv_channels(model: TrackNet) -> int:
+    return model.state_dict()["backbone.down1.conv1.conv.weight"].shape[1]
+
+
+class TestLoadModel:
+    def test_trainer_checkpoint_builds_its_stored_architecture(self, tmp_path):
+        config = {"background_frame": True, "seed": 7}
+        saved = build_model(config)
+        path = tmp_path / "latest.pt"
+        torch.save({"model_state_dict": saved.state_dict(), "config": config}, path)
+
+        model, stored = load_model(path, torch.device("cpu"))
+        assert stored == config
+        assert _first_conv_channels(model) == 12
+        _assert_same_weights(model, saved)
+
+    def test_bare_state_dict_builds_the_default(self, tmp_path):
+        saved = TrackNet()
+        path = tmp_path / "weights.pt"
+        torch.save(saved.state_dict(), path)
+
+        model, stored = load_model(path, torch.device("cpu"))
+        assert stored is None
+        assert _first_conv_channels(model) == 9
+        _assert_same_weights(model, saved)

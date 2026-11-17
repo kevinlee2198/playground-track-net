@@ -1,0 +1,8 @@
+# TrackNet V2 on tennis with each clip's median background frame as a fourth
+# input image. Differs from tennis_v2_noflip only by background_frame.
+# Every key not set here comes from tennis_v2_noflip.yaml and default.yaml.
+
+base: tennis_v2_noflip.yaml
+
+background_frame: true
+experiment_name: tennis_v2_bg

@@ -89,6 +89,7 @@ def build_dataset(
     height: int = 288,
     width: int = 512,
     transform: Callable | None = None,
+    background: bool = False,
 ) -> ConcatDataset:
     """One ``TrackNetDataset`` per clip, concatenated in the order given."""
     return ConcatDataset(
@@ -101,6 +102,7 @@ def build_dataset(
                 radius=radius,
                 stride=stride,
                 transform=transform,
+                background=background,
             )
             for c in clips
         ]

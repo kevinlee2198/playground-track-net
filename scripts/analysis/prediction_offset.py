@@ -20,9 +20,9 @@ import numpy as np
 import torch
 
 from data import TrackNetDataset, discover_tennis_clips, source_to_model, split_clips
-from models import TrackNet, load_model_weights
+from models import load_model
 from training.evaluate import heatmap_to_position
-from training.run import load_config
+from training.run import checkpoint_background, load_config
 
 NEAR_PX = 10.0
 
@@ -44,9 +44,9 @@ def main() -> None:
         discover_tennis_clips(data["root"]), data["val_groups"], data["test_groups"]
     )[split]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrackNet()
-    load_model_weights(model, weights, device)
-    model.to(device).eval()
+    model, stored = load_model(weights, device)
+    model.eval()
+    background = checkpoint_background(config, stored, weights)
 
     # (game, mirrored) -> [(dx, dy), ...]
     offsets: dict[tuple[str, bool], list[tuple[float, float]]] = defaultdict(list)
@@ -58,12 +58,14 @@ def main() -> None:
             width=width,
             radius=config["heatmap_radius"],
             stride=3,
+            background=background,
         )
         source_width, source_height = clip.source_size
         for window in range(0, len(clip), int(nth)):
             frames, _targets = clip[window]
             start = clip.window_starts[window]
             for mirrored in (False, True):
+                # Mirrors every image of the window, a background too.
                 inputs = frames.flip(-1) if mirrored else frames
                 with torch.no_grad():
                     heatmaps = model(inputs.unsqueeze(0).to(device))[0].float().cpu()
