@@ -34,8 +34,8 @@ Details, links and licences are in [data-sources.md](data-sources.md). Headlines
 | Model | Source | Params | Evidence | Code and weights |
 |---|---|---|---|---|
 | TrackNetV5 (MDD + R-STR) | arXiv 2512.02789 | 14.77M | F1 .9859 on its own 7:3 split with no test set. Independent retrains reached .915 and .773 | Self-described official SDK, study-only terms, no weights |
-| TrackNetV5 (NYCU, different paper) | ICIP 2026 | 10.09M; Lite 2.58M | F1 98.47 (Lite 98.06) vs V4 97.99 and V3 97.64, same test protocol | Weights released, no licence stated |
-| TrackNetV6 | ICMR 2026 | 35.8–58M | Best reported numbers, appendix only | Demo and weights only |
+| TrackNetV5 (NYCU, different paper) | ICIP 2026 | 10.09M; Lite 2.58M | F1 98.47 (Lite 98.06) vs V4 97.99 and V3 97.64, same test protocol. The repository's checkpoints were selected on test; see the 2026-11-17 update below | Weights in the repository (reproductions, by its own README), no licence stated |
+| TrackNetV6 | ICMR 2026 | 35.8–58.0 in its "Param(M)" column; the unit is unsettled (update below) | Best reported numbers; main paper read 2026-11-16 (update below) | Demo code only: no weights, no training code, no licence (checked 2026-11-16) |
 | BlurBall | arXiv 2509.18387, CVPRW 2026 | 1.50M | F1 97.17 vs WASB 96.00 and V3 95.93 on table tennis | MIT |
 | WASB-HRNet | arXiv 2311.05237, BMVC 2023 | 1.5M | Beats V2 in four of five later comparisons; roughly level with V3, sometimes below | Code MIT; weights licence not stated |
 
@@ -46,6 +46,28 @@ Findings:
 - **Median background frame is the best-supported addition.** In RacketVision's tennis ablation, adding it to TrackNetV3 took recall from .725 to .830 and mean localisation error from 7.95 to 3.07 px. TrackNetV3's own ablation reports +0.41 F1. It assumes a static camera.
 - **General-purpose detectors have not caught up.** YOLO11 on RacketVision tennis: recall .416, error 17.5 px, against .797–.830 and 1.7–3.1 px for TrackNetV3. No paper benchmarks SAM-family, point-tracker or DINO-feature approaches on these datasets, so that gap is untested, not closed.
 - **On-device evidence is thin.** WASB is estimated at about 28 GMACs per 3-frame pass against roughly 112 for V2. The only device number found is a hobby repo reporting 3–5 ms per frame on an A17 Pro, with no method given. No peer-reviewed Neural Engine measurement exists for HRNet or U-Net trackers.
+
+*Update, 2026-11-17: our own background-frame run.* On tennis, with our recipe, the median background frame made no difference that one run can show: validation F1 0.949 against 0.947 at 4 px, 512x288 and 0.909 against 0.903 at 4 px of the source ([results](2026-11-16-training-results.md) §5).
+
+*Update, 2026-11-17: NYCU TrackNetV5 and TrackNetV6 read in more depth,* from the papers and the released code (the V6 main paper from a copy downloaded in a browser).
+
+NYCU TrackNetV5, which reports on badminton only:
+
+- **Network:** 5 frames in and 5 heatmaps out. An R(2+1)D block at the input, then a U-Net of Fused-MBConv and MBConv blocks with BatchNorm, a motion-attention gate in the decoder, and two extra output heads used only in training (deep supervision). Lite is the same network at half width.
+- **Median frame:** the repository's code, which reuses TrackNetV3's, gives each frame a fourth channel, the absolute difference from the clip's median frame. The paper does not mention a median frame, so this model is not evidence for the background frame.
+- **Ablation (paper Table 4; no repeats or variance reported):** MBConv blocks +0.10 F1, the motion prompt and gate +0.02, R(2+1)D −0.08. Deep supervision is credited with +0.05 (Table 2). The full stack in the ablation reaches 98.03, not the 98.47 headline.
+- **The repository's checkpoints:** `gino6178/TrackNetV5` calls itself an implementation of the paper and its weights reproductions, not the numbers the paper reports. Those checkpoints were picked on test F1 and score 98.11 (Lite 98.09) at the default threshold; the README's higher numbers come from tuning the threshold on the test set. They were trained with TrackNetV3's recipe (Adam 1e-3, 30 epochs, mixup 0.5; batch 10 for Lite, 4 for the full model) on train and val together, not the recipe the paper describes (AdamW 1e-4, batch 16, cosine schedule). The paper does not say how its own model was selected.
+
+TrackNetV6, from six authors at Dalian University of Technology:
+
+- **Repository:** no weight files (none in the current tree or releases; one search of the full history found none, and that search was not repeated), no training code, no licence.
+- **Network:** a VGG16-BN encoder, 3 frames in and 3 heatmaps out at 512x288, no background frame and no motion input, and a 64-channel decoder built from multistep (ODE-style) updates, wavelet blocks and an attention block. The code loads ImageNet weights for the encoder; the paper says the model is trained from scratch.
+- **Recipe (paper p. 6):** Adam, learning rate printed as "10e−3", 2-epoch warm-up, batch 8, 30 epochs. The loss is weighted BCE summed over every decoder stage (Eq. 10); that deep supervision is not ablated. The target shape and radius, the augmentations, and how the checkpoint and threshold were chosen are not stated.
+- **Tennis (Table 1):** the TrackNet tennis dataset, trained on "the first 7 matches" and tested on "the remaining 3", which we read as game1–7 and game8–10, our test games. The last rally of each training match is held out for validation. The authors retrained every baseline. The tolerance is 4 px, at a resolution the paper does not state. F1: V6 .9677, V6-light .9573, MMFNet .9492, V4 .9491, V3 .9443, TOTNet .9420, BlurBall .9394, WASB .9313, MonoTrack .9062, V2 .8933, V1 .8788.
+- **Ablations:** badminton only; no repeats or variance reported. Going from 3 to 8 frames in and out took badminton F1 from .9644 to .9808 (Tables 1 and 4), with the batch size doubled in the same step.
+- **Parameter column:** the paper calls it a parameter count, but V2, V3 and V4 are all listed at 43.3 and WASB and BlurBall at 5.7, which match float32 size in MiB (11.3M and 1.5M parameters times 4 bytes), not millions of parameters. A hand count of the repository model gives about 17.3M, which fits neither reading of V6's 58.0 (35.8 is the light variant, which the repository does not contain).
+
+What this changes: nothing in the architecture. No new block in either paper has support beyond unrepeated differences on badminton. Ideas to try after the planned runs, in order: a loss on each decoder stage (training only; both papers use it, the only measurement is +0.05 F1, unrepeated); longer windows (confounded with batch size, and a code change here); for a small on-device model, a width-scaled MBConv U-Net as in NYCU's Lite; and last, ImageNet initialisation of the encoder, which neither paper measures (V6's demo code loads ImageNet weights while its paper says the model is trained from scratch) and which needs a weight mapping, since ours uses GroupNorm.
 
 ### 3.2 Our V5 implementation versus the authors' SDK
 
@@ -72,7 +94,7 @@ The spec's "PixelShuffle(4)" note is a misreading: the SDK uses PixelShuffle(16)
 | Training window stride | 3 (non-overlapping) | 1 (V3, V4, WASB, RacketVision) |
 | Colour jitter | Independent per frame | Once per window (WASB) |
 | Mixup | Implemented, not wired in | Batch-level, α = 0.5 (V3: +0.29 points F1) |
-| Background frame | None | Median frame concatenated (V3, RacketVision, NYCU V5) |
+| Background frame | None | Median frame concatenated (V3, RacketVision). Corrected 2026-11-17: NYCU V5 was listed here, but only the repository's code uses a median frame, as a difference channel; its paper does not mention one |
 | Optimiser | AdamW 1e-4, batch 2 | Adam 1e-3, batch 8–10 (V3, WASB) |
 | Far detection in metrics | Counted as FP and FN | FP only (V3, V4, WASB); RacketVision matches ours |
 | Tolerance space | 4 px at 512x288 in config; "original resolution" in spec | 4 px at 512x288 (V3, V4, RacketVision); original resolution (WASB, arXiv V5) |
@@ -215,14 +237,14 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 - Whether the TrackNetV5 SDK is really official (self-described; consistent with the paper's recipe and parameter count).
 - Licences for the WASB weights and the NYCU TrackNetV5 code and weights.
 - FLOPs for WASB and NYCU-Lite are hand estimates, not measurements.
-- TrackNetV6's main paper (publisher returned 403); only its appendix was read.
+- TrackNetV6's main paper (publisher returned 403); only its appendix was read. *Update, 2026-11-17:* read from a copy downloaded in a browser (§3.1). Still not stated in it: the target shape and radius, augmentations, the resolution of its 4 px tolerance, and how checkpoints and thresholds were chosen.
 - BlurBall's download host and the Kaggle `tenis_backview` page.
 - Whether our Kalman filter or spline gap fill raise or lower F1.
 
 ## 7. Sources
 
 - TrackNetV5: arXiv 2512.02789; `github.com/thaonan/TrackNetV5-SDK`
-- TrackNetV5 (NYCU): ICIP 2026; `github.com/gino6178/TrackNetV5`
+- TrackNetV5 (NYCU): ICIP 2026, `people.cs.nycu.edu.tw/~yushuen/data/TracknetV5_26.pdf`; `github.com/gino6178/TrackNetV5`
 - TrackNetV6: ICMR 2026, DOI 10.1145/3805622.3810690; `github.com/Gi-gigi/TrackNetV6`
 - TrackNetV3: `github.com/qaz812345/TrackNetV3`
 - TrackNetV4: arXiv 2409.14543; `github.com/TrackNetV4/TrackNetV4`
