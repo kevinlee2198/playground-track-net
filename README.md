@@ -114,7 +114,7 @@ playground-track-net/
 
 Details, file references and the measured preflight numbers are in [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md) §4–§5. Training results are in [docs/2026-11-16-training-results.md](docs/2026-11-16-training-results.md).
 
-**Shown so far:** one 30-epoch baseline, scored on the validation game only: F1 0.949 at 4 px, 512x288, and 0.771 at source resolution. Nothing has been evaluated on the test split.
+**Shown so far:** two 30-epoch runs, scored on the validation game only: the baseline, F1 0.949 at 4 px, 512x288 and 0.771 at source resolution, and the same recipe without the flip, 0.947 and 0.903. Nothing has been evaluated on the test split.
 
 **Found by the baseline:** predictions sit a constant 1.1 px left of the labels on the validation game (+0.1 px on the training games). The dataset's labels are about 1.5 source pixels right of the ball in game1–7, and mirroring half the training windows makes the sign of that offset depend on the orientation. Training without the flip (`horizontal_flip: false`, configs/tennis_v2_noflip.yaml) removes the offset: that run's mean horizontal error is −0.01 px, and its validation F1 is 0.903 at 4 px of the source against the baseline's 0.771 (0.947 against 0.949 at 4 px, 512x288).
 
