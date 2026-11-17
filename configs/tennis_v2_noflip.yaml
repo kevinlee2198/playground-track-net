@@ -1,0 +1,53 @@
+# TrackNet V2 on tennis without the horizontal-flip augmentation.
+# Identical to default.yaml except horizontal_flip and experiment_name.
+
+# Model input and target
+input_size: [512, 288]
+heatmap_radius: 2.5
+
+# Optimizer: AdamW (decoupled weight decay) or Adam (weight_decay is an L2 penalty)
+optimizer: AdamW
+learning_rate: 1.0e-4
+weight_decay: 0.01
+
+# LR schedule: multiply the learning rate by gamma at each milestone epoch
+lr_schedule:
+  milestones: [20, 25]
+  gamma: 0.1
+
+# Training
+batch_size: 2
+epochs: 30
+seed: 42
+train_stride: 1         # validation and test always use stride 3
+horizontal_flip: false  # docs/2026-11-16-training-results.md §4
+log_every: 100          # steps between running-loss log lines
+
+# DataLoader
+num_workers: 4
+pin_memory: true
+persistent_workers: true
+
+# Mixed Precision
+amp_dtype: bfloat16
+
+# torch.compile
+compile_model: false    # needs a C compiler; its speed-up is unmeasured on this machine
+
+# Checkpointing
+checkpoint_dir: checkpoints
+experiment_name: tennis_v2_noflip
+
+# TensorBoard
+log_dir: runs
+
+# Detection
+detection_threshold: 0.5
+distance_threshold: 4
+
+# Dataset: root/<game>/<clip>/Label.csv; splits are made by game
+data:
+  format: tennis
+  root: datasets/tennis
+  val_groups: [game7]
+  test_groups: [game8, game9, game10]

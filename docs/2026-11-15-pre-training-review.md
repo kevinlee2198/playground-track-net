@@ -1,7 +1,7 @@
 # Pre-Training Review — Data, Literature, and Code Readiness
 
 **Date:** 2026-11-15
-**Status:** Research complete. First-run decision made. The fixes in §4.1 and §4.2 are done (branch `fix/pre-training-blockers`) and a preflight on the real tennis dataset has passed (§4.4). No full training run yet; the open decisions are in §5.
+**Status:** Research complete. First-run decision made. The fixes in §4.1 and §4.2 are done (branch `fix/pre-training-blockers`) and a preflight on the real tennis dataset has passed (§4.4). The first full run finished on 2026-11-16: see [2026-11-16-training-results.md](2026-11-16-training-results.md). The open decisions are in §5.
 **Scope:** What changed between the April 2026 review and the first real training run.
 **Related:**
 - [data-sources.md](data-sources.md) — full dataset details and verification log
@@ -184,6 +184,8 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 - `compile_model: false` by default until a C compiler is installed.
 - The first experiment after a baseline is the **median background frame** input.
 - **V5 is deferred.** If revisited, fix MDD and realign R-STR first (§4.3).
+
+**Update, 2026-11-16:** the first run is done (30 epochs in 5.7 hours on the laptop), which settles item 1 for V2. What it showed, and the experiments that follow from it, are in [2026-11-16-training-results.md](2026-11-16-training-results.md). The rest of this section is as written on 2026-11-15.
 
 **Open:**
 

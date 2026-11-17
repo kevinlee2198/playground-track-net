@@ -47,8 +47,9 @@ def _build_datasets(
 ) -> dict[str, ConcatDataset]:
     """Datasets for the named splits ("train", "val", "test") of ``config["data"]``.
 
-    Train uses ``train_stride`` and flip + colour-jitter augmentation; val and
-    test use stride 3 and no augmentation. With ``skip_empty``, a split with no
+    Train uses ``train_stride`` and colour-jitter augmentation, with a random
+    horizontal flip first when ``horizontal_flip`` is set; val and test use
+    stride 3 and no augmentation. With ``skip_empty``, a split with no
     clips is logged and left out of the result.
 
     Raises:
@@ -75,7 +76,8 @@ def _build_datasets(
             )
         if split == "train":
             stride = config["train_stride"]
-            transform = Compose([HorizontalFlip(), FrameColorJitter()])
+            flip = [HorizontalFlip()] if config["horizontal_flip"] else []
+            transform = Compose([*flip, FrameColorJitter()])
         else:
             stride, transform = EVAL_STRIDE, None
         datasets[split] = build_dataset(

@@ -19,6 +19,7 @@ batch_size: 2
 epochs: 30
 seed: 42
 train_stride: 1         # validation and test always use stride 3
+horizontal_flip: true   # mirror half the training windows left to right
 log_every: 100          # steps between running-loss log lines
 
 # DataLoader
