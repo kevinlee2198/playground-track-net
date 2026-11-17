@@ -10,7 +10,7 @@ Protocols, as `evaluate` reports them: `model_res_4px` counts a detection within
 |---|---|---|---|---|
 | `tennis_v2_baseline` | none (configs/default.yaml at f759052) | 20 | 0.949 | 0.771 |
 | `tennis_v2_noflip` | `horizontal_flip: false` | 15 | 0.947 | 0.903 |
-| `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | running since 2026-11-16 18:24 | pending | pending |
+| `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | 15 | 0.949 | 0.909 |
 | `tennis_v2_mixup` | `mixup_alpha: 0.5` on top of `tennis_v2_noflip` | planned | planned | planned |
 | `tennis_v2_jitter` | `color_jitter` 0.1 at p 0.5 on top of `tennis_v2_noflip` | planned | planned | planned |
 
@@ -123,11 +123,11 @@ Not done for this run: the failing frames were not cropped and sorted as in §3,
 
 ## 5. The median background frame
 
-Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) was started on 2026-11-16 at 18:24 and its results are pending. It differs from `tennis_v2_noflip` by one key, `background_frame: true`, so the comparison is with that run's final numbers.
+Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) differs from `tennis_v2_noflip` by one key, `background_frame: true`, so the comparison is with that run's final numbers. It finished on 2026-11-17 and scored level with `tennis_v2_noflip`: 0.949 against 0.947 at 4 px, 512x288, and 0.909 against 0.903 at the source-resolution tolerance, differences one run cannot tell from noise. The numbers are at the end of this section.
 
 **The input.** For each clip, the per-pixel median of up to 50 evenly spaced frames, at model resolution, is appended to every window as a fourth RGB image (12 input channels). A moving ball is in few of those frames at any one place, so the median leaves it out. Players who stand still through a short clip partly remain in it: in the background image of game7 Clip8 (55 frames, 54 of them scored) both players are visible.
 
-**Why it is next.** It is the best-supported addition in the literature ([pre-training review](2026-11-15-pre-training-review.md) §3.1). The failure analysis in §3 does not make a strong case for it on its own. About half of the baseline's failures are at rackets and players (45 of 83 wrong detections, 46 of 89 misses), and those move, so they are missing from the background just as the ball is. Static structures are a small share: 8 wrong detections on court lines. Where a static reference could plausibly help is with balls that are faint or in front of a line or the net (15 of the 89 misses). None of this is tested here.
+**Why it was tried.** It is the best-supported addition in the literature ([pre-training review](2026-11-15-pre-training-review.md) §3.1). The failure analysis in §3 does not make a strong case for it on its own. About half of the baseline's failures are at rackets and players (45 of 83 wrong detections, 46 of 89 misses), and those move, so they are missing from the background just as the ball is. Static structures are a small share: 8 wrong detections on court lines. Where a static reference could plausibly help is with balls that are faint or in front of a line or the net (15 of the 89 misses). None of this is tested here.
 
 **A check of the input, before any training.** No model involved; game1–7 only, every 5th frame of each clip, against that clip's median background.
 
@@ -135,6 +135,24 @@ Run `tennis_v2_bg` (configs/tennis_v2_bg.yaml) was started on 2026-11-16 at 18:2
 - The ball has not been absorbed into the background: at a visible ball, the largest difference from the background in the 5x5 patch at the label has a median of 83–119 of 255 by game, and is under 20 in 0–2.7% of frames by game (1.1% on game7). A racket or player next to the ball would score high too, so this does not show that the ball can be told apart from them.
 
 The script for this check is not in the repository.
+
+**The run, finished.** `tennis_v2_noflip`'s recipe with `background_frame: true`, same seed, run from a worktree at commit 0dd09a4. 30 epochs, 182,490 steps, 6.0 hours from start to finish (2026-11-16 18:24 to 2026-11-17 00:22). 24 epochs took 640–677 s of training; epoch 1 took 803 s and epochs 16–20 took 709–818 s, for a reason that was not looked into. Peak GPU memory 1,777 MiB (1,769 without the background), no warning or error in the log.
+
+| Checkpoint | Protocol | Precision | Recall | F1 | TP | TN | FP wrong place | FP no ball | FN |
+|---|---|---|---|---|---|---|---|---|---|
+| best (epoch 15) | `model_res_4px` | 0.948 | 0.949 | 0.949 | 1,590 | 110 | 36 | 51 | 85 |
+| best (epoch 15) | `source_res_4px` | 0.876 | 0.945 | 0.909 | 1,469 | 110 | 157 | 51 | 85 |
+| latest (epoch 30) | `model_res_4px` | 0.970 | 0.919 | 0.944 | 1,556 | 130 | 17 | 31 | 138 |
+| latest (epoch 30) | `source_res_4px` | 0.892 | 0.912 | 0.902 | 1,431 | 130 | 142 | 31 | 138 |
+
+- **No difference that one run can show.** Against `tennis_v2_noflip`, the best checkpoints score 0.949 against 0.947 at 4 px, 512x288 (1,590 against 1,581 correct detections in 1,872 frames) and 0.909 against 0.903 at the source-resolution tolerance (1,469 against 1,447). At epoch 30 it is 0.944 against 0.938 and 0.902 against 0.896. All four comparisons favour the background frame, by 0.001 to 0.006. Within this run alone, F1 at 4 px moves between 0.934 and 0.949 over epochs 10–20, both best checkpoints were picked on this same validation game, and there is one seed each, so this is not evidence of a gain.
+- **Localisation is the same** (`scripts/analysis/val_errors.py`, against the label coordinates): the median distance from the label is 0.76 px (no-flip 0.76) and the 90th percentile 1.56 (1.57); 90.7% of detections on a visible ball are within 1.6 px (90.4%). The mean error is +0.00 px horizontally and −0.02 vertically at the best epoch, and −0.00 and −0.04 at epoch 30. With mirrored input it is +1.14 px, as for the no-flip run: this model has learned the same label convention.
+- **Detection is about the same.** Clearly visible balls are detected 96.2% of the time (no-flip 95.4%) and hard-to-see balls 72.6% (73.8%). There are 85 misses (97), every one with a heatmap peak between 0.1 and 0.5, and 51 false alarms on frames without a labelled ball (46). The detection threshold is flat around the default: 0.950 at 0.4, 0.949 at 0.5, 0.949 at 0.6.
+- **Learning curve (`model_res_4px` F1 per epoch):** 0.8265 after epoch 1 (no-flip 0.7639), 0.925 at epoch 4, 0.938 at epoch 8, the best 0.949 at epoch 15 and 0.948 at epoch 16. After the learning-rate drops at epochs 20 and 25, epochs 21–30 sit at 0.9436–0.9455, ending at 0.944 with precision 0.97 and recall 0.92. The training loss ends at an epoch mean of 1.97e-5.
+
+Not done for this run: the failing frames were not cropped and sorted as in §3, so whether the 12 fewer misses are the faint balls and the balls in front of a line or the net, where a static reference was expected to help, is not known.
+
+**What this does and does not say.** The gains reported for a background frame elsewhere (review §3.1) did not appear here at a size one run can show. Reasons that would fit, none of them tested: the no-flip run already detects 95% of clearly visible balls on this game, which leaves little room; about half of the failures found in §3 were at rackets and players, which the background does not contain; and the validation game is one broadcast match with the same camera as the training games. On this evidence there is no reason to turn `background_frame` on: it adds 28 s of start-up and makes `infer` need a single static-camera clip. It stays off by default, and the runs in §6 stay based on `tennis_v2_noflip`.
 
 ## 6. Mixup and colour-jitter strength
 
