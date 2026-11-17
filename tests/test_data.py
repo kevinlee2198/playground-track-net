@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pytest
 import torch
+import torchvision.transforms.v2 as T
 from torch.utils.data import DataLoader
 
 from data.background import background_indices, median_frame
@@ -13,7 +14,13 @@ from data.dataset import TrackNetDataset
 from data.heatmap import generate_heatmap, model_to_source, source_to_model
 from data.labels import load_labels, visibility_counts
 from data.sources import build_dataset, discover_tennis_clips, split_clips
-from data.transforms import Compose, FrameColorJitter, HorizontalFlip, Mixup
+from data.transforms import (
+    Compose,
+    FrameColorJitter,
+    FrameHeatmapPair,
+    HorizontalFlip,
+    mixup_batch,
+)
 from inference.video_preprocess import preprocess_frame
 
 
@@ -644,45 +651,145 @@ class TestFrameColorJitter:
         assert all(torch.allclose(images[0], image) for image in images[1:])
         assert not torch.allclose(images[0], frame)
 
-
-class TestMixup:
-    def test_mixup_blends_frames_and_heatmaps(self):
-        torch.manual_seed(42)
-        frames_a = torch.ones(9, 4, 6)
-        heatmaps_a = torch.ones(3, 4, 6)
-        frames_b = torch.zeros(9, 4, 6)
-        heatmaps_b = torch.zeros(3, 4, 6)
-        mixup = Mixup(alpha=1.0)
-        f_out, h_out = mixup(frames_a, heatmaps_a, frames_b, heatmaps_b)
-        assert f_out.min() >= 0.0
-        assert f_out.max() <= 1.0
-        lam = f_out[0, 0, 0].item()
-        assert torch.allclose(f_out, torch.full_like(f_out, lam))
-        assert torch.allclose(h_out, torch.full_like(h_out, lam))
-
-    def test_mixup_output_shapes(self):
-        frames_a = torch.randn(9, 288, 512)
-        heatmaps_a = torch.randn(3, 288, 512)
-        frames_b = torch.randn(9, 288, 512)
-        heatmaps_b = torch.randn(3, 288, 512)
-        mixup = Mixup(alpha=1.0)
-        f_out, h_out = mixup(frames_a, heatmaps_a, frames_b, heatmaps_b)
-        assert f_out.shape == (9, 288, 512)
-        assert h_out.shape == (3, 288, 512)
-
-    def test_mixup_lambda_from_beta_distribution(self):
+    def test_p_zero_returns_frames_unchanged(self):
         torch.manual_seed(0)
-        mixup = Mixup(alpha=1.0)
-        frames_a = torch.ones(9, 2, 2)
-        heatmaps_a = torch.ones(3, 2, 2)
-        frames_b = torch.zeros(9, 2, 2)
-        heatmaps_b = torch.zeros(3, 2, 2)
-        lambdas = []
-        for _ in range(100):
-            f_out, _ = mixup(frames_a, heatmaps_a, frames_b, heatmaps_b)
-            lambdas.append(f_out[0, 0, 0].item())
-        mean_lam = sum(lambdas) / len(lambdas)
-        assert 0.3 < mean_lam < 0.7
+        jitter = FrameColorJitter(p=0.0)
+        for _ in range(20):
+            frames = torch.rand(9, 32, 64)
+            out, _ = jitter(frames, torch.zeros(3, 32, 64))
+            assert torch.equal(out, frames)
+
+    def test_p_one_is_torchvision_colorjitter_with_no_extra_draw(self):
+        frames = torch.rand(9, 32, 64)
+        torch.manual_seed(3)
+        out, _ = FrameColorJitter(p=1.0)(frames, torch.zeros(3, 32, 64))
+        after = torch.rand(1)
+        torch.manual_seed(3)
+        batch = frames.unflatten(0, (-1, 3))
+        expected = T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3)(batch)
+        assert torch.equal(out, expected.clamp(0.0, 1.0).flatten(0, 1))
+        # The same random-number stream: no draw for the p decision.
+        assert torch.equal(torch.rand(1), after)
+
+    def test_p_half_jitters_about_half_of_the_windows(self):
+        torch.manual_seed(0)
+        jitter = FrameColorJitter(p=0.5)
+        changed = 0
+        for _ in range(200):
+            frames = torch.rand(9, 32, 64)
+            out, _ = jitter(frames, torch.zeros(3, 32, 64))
+            changed += not torch.equal(out, frames)
+        assert 70 <= changed <= 130
+
+    @pytest.mark.parametrize("p", [1.5, -0.1])
+    def test_p_outside_unit_interval_raises(self, p):
+        with pytest.raises(ValueError, match=r"p must be in \[0, 1\]"):
+            FrameColorJitter(p=p)
+
+    def test_keeps_its_strengths_and_p(self):
+        jitter = FrameColorJitter(brightness=0.1, contrast=0.2, saturation=0.4, p=0.5)
+        assert jitter.jitter.brightness == pytest.approx((0.9, 1.1))
+        assert jitter.jitter.contrast == pytest.approx((0.8, 1.2))
+        assert jitter.jitter.saturation == pytest.approx((0.6, 1.4))
+        assert jitter.p == 0.5
+
+
+_DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA"),
+    ),
+]
+
+
+def _constant_batch(batch: int, channels: int = 9) -> FrameHeatmapPair:
+    """Sample ``i`` filled with ``i`` in its frames and ``i * i`` in its
+    heatmaps, so the weight and partner of each mix can be solved for."""
+    values = torch.arange(batch, dtype=torch.float32).view(-1, 1, 1, 1)
+    frames = values.expand(batch, channels, 8, 16).clone()
+    heatmaps = (values**2).expand(batch, 3, 8, 16).clone()
+    return frames, heatmaps
+
+
+class TestMixupBatch:
+    @pytest.mark.parametrize("device", _DEVICES)
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    @pytest.mark.parametrize("channels", [9, 12])
+    def test_shape_dtype_and_device_preserved(self, device, dtype, channels):
+        torch.manual_seed(0)
+        frames = torch.rand(4, channels, 8, 16, device=device, dtype=dtype)
+        heatmaps = torch.rand(4, 3, 8, 16, device=device, dtype=dtype)
+        out_frames, out_heatmaps = mixup_batch(frames, heatmaps, alpha=0.5)
+        for out, given in ((out_frames, frames), (out_heatmaps, heatmaps)):
+            assert out.shape == given.shape
+            assert out.dtype == dtype
+            assert out.device == given.device
+
+    @pytest.mark.parametrize("seed", range(5))
+    @pytest.mark.parametrize("channels", [9, 12])
+    def test_each_sample_mixes_with_one_partner_by_one_weight(self, seed, channels):
+        batch = 6
+        frames, heatmaps = _constant_batch(batch, channels)
+        torch.manual_seed(seed)
+        out_frames, out_heatmaps = mixup_batch(frames, heatmaps, alpha=0.5)
+        partners = []
+        for i in range(batch):
+            f, h = out_frames[i].flatten(), out_heatmaps[i].flatten()
+            # One weight for every channel and pixel of the sample.
+            assert torch.all(f == f[0]) and torch.all(h == h[0])
+            f, h = f[0].item(), h[0].item()
+            if f == i and h == i * i:  # its own partner: returned unchanged
+                partners.append(i)
+                continue
+            # f = lam * i + (1 - lam) * j and h = lam * i^2 + (1 - lam) * j^2
+            explained = []
+            for j in range(batch):
+                if j == i:
+                    continue
+                lam = (f - j) / (i - j)
+                h_expected = lam * i * i + (1 - lam) * j * j
+                if 0.5 - 1e-6 <= lam <= 1 + 1e-6 and abs(h - h_expected) < 1e-4:
+                    explained.append(j)
+            assert len(explained) == 1, (i, f, h, explained)
+            partners.append(explained[0])
+        assert sorted(partners) == list(range(batch))  # one permutation
+        assert partners != list(range(batch))  # and something was mixed
+
+    def test_heatmaps_in_unit_interval_stay_there(self):
+        torch.manual_seed(0)
+        frames = torch.rand(8, 9, 8, 16)
+        heatmaps = torch.rand(8, 3, 8, 16)
+        heatmaps[:, :, 0] = 1.0
+        heatmaps[:, :, 1] = 0.0
+        _, out = mixup_batch(frames, heatmaps, alpha=0.5)
+        assert out.min() >= 0.0 and out.max() <= 1.0
+
+    def test_batch_of_one_is_returned_unchanged(self):
+        torch.manual_seed(0)
+        frames = torch.rand(1, 9, 8, 16)
+        heatmaps = torch.rand(1, 3, 8, 16)
+        out_frames, out_heatmaps = mixup_batch(frames, heatmaps, alpha=0.5)
+        assert torch.equal(out_frames, frames)
+        assert torch.equal(out_heatmaps, heatmaps)
+
+    def test_seeded_by_torch_and_drawn_on_the_cpu(self):
+        frames, heatmaps = _constant_batch(6)
+        torch.manual_seed(1)
+        first = mixup_batch(frames, heatmaps, alpha=0.5)
+        torch.manual_seed(1)
+        second = mixup_batch(frames, heatmaps, alpha=0.5)
+        assert all(torch.equal(a, b) for a, b in zip(first, second))
+        if torch.cuda.is_available():
+            torch.manual_seed(1)
+            on_gpu = mixup_batch(frames.cuda(), heatmaps.cuda(), alpha=0.5)
+            assert all(torch.allclose(a, b.cpu()) for a, b in zip(first, on_gpu))
+
+    @pytest.mark.parametrize("alpha", [0.0, -0.5])
+    def test_alpha_not_above_zero_raises(self, alpha):
+        frames, heatmaps = _constant_batch(2)
+        with pytest.raises(ValueError, match="alpha must be positive"):
+            mixup_batch(frames, heatmaps, alpha=alpha)
 
 
 class TestCompose:
@@ -796,6 +903,11 @@ class TestPackageImports:
 
         assert data.background_indices is background_indices
         assert data.median_frame is median_frame
+
+    def test_mixup_batch_exported(self):
+        import data
+
+        assert data.mixup_batch is mixup_batch
 
 
 class TestDataLoader:

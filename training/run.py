@@ -81,11 +81,12 @@ def _build_datasets(
 ) -> dict[str, ConcatDataset]:
     """Datasets for the named splits ("train", "val", "test") of ``config["data"]``.
 
-    Train uses ``train_stride`` and colour-jitter augmentation, with a random
-    horizontal flip first when ``horizontal_flip`` is set; val and test use
-    stride 3 and no augmentation. With ``background_frame``, every split's
-    windows carry the clip's median background as a fourth image. With
-    ``skip_empty``, a split with no clips is logged and left out of the result.
+    Train uses ``train_stride`` and the colour jitter ``color_jitter`` sets,
+    with a random horizontal flip first when ``horizontal_flip`` is set; val
+    and test use stride 3 and no augmentation. With ``background_frame``,
+    every split's windows carry the clip's median background as a fourth
+    image. With ``skip_empty``, a split with no clips is logged and left out of
+    the result.
 
     Raises:
         ValueError: If a split has no clips and ``skip_empty`` is false.
@@ -112,7 +113,14 @@ def _build_datasets(
         if split == "train":
             stride = config["train_stride"]
             flip = [HorizontalFlip()] if config["horizontal_flip"] else []
-            transform = Compose([*flip, FrameColorJitter()])
+            settings = config["color_jitter"]
+            jitter = FrameColorJitter(
+                brightness=settings["brightness"],
+                contrast=settings["contrast"],
+                saturation=settings["saturation"],
+                p=settings["p"],
+            )
+            transform = Compose([*flip, jitter])
         else:
             stride, transform = EVAL_STRIDE, None
         datasets[split] = build_dataset(
@@ -137,17 +145,41 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
     checkpoint. With ``resume``, training continues from that checkpoint.
 
     Raises:
-        FileExistsError: If ``resume`` is not given but this experiment already
-            has a ``latest.pt``, which a fresh run would overwrite. Checked
-            before anything is built or written.
+        FileNotFoundError: If ``resume`` is given but does not exist.
+        IsADirectoryError: If ``resume`` is given but is a directory.
+        FileExistsError: If this experiment already has a ``latest.pt`` and
+            ``resume`` is not that same file (paths compared after resolving
+            symlinks): a fresh run, or one resumed from another checkpoint,
+            would overwrite it. This includes another checkpoint of this
+            experiment, such as its ``best.pt``.
+        All are checked before anything is built or written.
     """
-    if resume is None:
-        latest = Path(experiment_dir(config, "checkpoint_dir")) / "latest.pt"
-        if latest.exists():
+    if resume is not None and not Path(resume).is_file():
+        if Path(resume).is_dir():
+            raise IsADirectoryError(
+                f"resume checkpoint {resume} is a directory, not a checkpoint file"
+            )
+        raise FileNotFoundError(f"resume checkpoint {resume} does not exist")
+    latest = Path(experiment_dir(config, "checkpoint_dir")) / "latest.pt"
+    if latest.exists():
+        if resume is None:
             raise FileExistsError(
                 f"{latest} already exists and a fresh run would overwrite it: "
                 f"pass --resume {latest} to continue that run, or set a different "
                 "experiment_name to start a new one"
+            )
+        source, target = Path(resume).resolve(), latest.resolve()
+        if source != target:
+            if source.parent == target.parent:
+                raise FileExistsError(
+                    f"continuing from {resume} would replace this run's own "
+                    f"{latest}: set a new experiment_name to branch a new run from it"
+                )
+            raise FileExistsError(
+                f"{latest} already exists and resuming from {resume} would "
+                "overwrite it: use the config whose experiment_name matches that "
+                "checkpoint to continue its run, or set a new experiment_name to "
+                "start a new run from it"
             )
     datasets = _build_datasets(config, ("train", "val"))
     # The model is initialised before the Trainer seeds, so seed it here too.
@@ -165,22 +197,38 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
 _RUN_LENGTH_KEYS = ("epochs", "max_steps")
 # Settings held in the optimizer and scheduler state that a resume restores.
 _RESTORED_KEYS = ("optimizer", "learning_rate", "weight_decay", "lr_schedule")
+# Config keys added after checkpoints already existed, each with the value the
+# code used before the key: what a checkpoint saved without the key trained with.
+_VALUE_BEFORE_KEY: dict[str, object] = {
+    "horizontal_flip": True,
+    "background_frame": False,
+    "color_jitter": {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0},
+    "mixup_alpha": 0.0,
+}
 
 
 def _warn_config_changes(stored: dict, current: dict) -> None:
     """Log one warning listing each top-level key whose value differs between
-    the checkpoint's config and the current one, except the run-length keys."""
+    the checkpoint's config and the current one, except the run-length keys.
+
+    A key the checkpoint's config lacks reads as its ``_VALUE_BEFORE_KEY``
+    value when it has one, else as None; a key the current config lacks reads
+    as None."""
+
+    def before(key: str) -> object:
+        return stored[key] if key in stored else _VALUE_BEFORE_KEY.get(key)
+
     changes = [
-        f"{key}: {stored.get(key)!r} -> {current.get(key)!r}"
+        f"{key}: {before(key)!r} -> {current.get(key)!r}"
         for key in sorted(stored.keys() | current.keys())
-        if key not in _RUN_LENGTH_KEYS and stored.get(key) != current.get(key)
+        if key not in _RUN_LENGTH_KEYS and before(key) != current.get(key)
     ]
     if not changes:
         return
     message = "Resuming with a config that differs from the checkpoint's: " + "; ".join(
         changes
     )
-    restored = [key for key in _RESTORED_KEYS if stored.get(key) != current.get(key)]
+    restored = [key for key in _RESTORED_KEYS if before(key) != current.get(key)]
     if restored:
         message += (
             ". The optimizer and LR schedule are restored from the checkpoint, "

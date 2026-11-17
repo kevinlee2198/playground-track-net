@@ -65,6 +65,21 @@ class PerfectModel(nn.Module):
         return out
 
 
+class RecordingModel(SimpleModel):
+    """Trains like SimpleModel and records every input, split by whether it
+    came in training or evaluation mode."""
+
+    def __init__(self):
+        super().__init__()
+        self.train_inputs: list[torch.Tensor] = []
+        self.eval_inputs: list[torch.Tensor] = []
+
+    def forward(self, x, return_logits=False):
+        inputs = self.train_inputs if self.training else self.eval_inputs
+        inputs.append(x.detach().cpu())
+        return super().forward(x, return_logits)
+
+
 class CentreBallModel(SimpleModel):
     """Trains like SimpleModel, but its probabilities always mark one pixel at
     the frame centre, where _make_synthetic_dataset puts the ball, so
@@ -118,6 +133,7 @@ def _make_test_config(
         "epochs": epochs,
         "input_size": [64, 32],
         "seed": 42,
+        "mixup_alpha": 0.0,
         "num_workers": 0,
         "pin_memory": False,
         "persistent_workers": False,
@@ -198,22 +214,32 @@ def test_load_config_rejects_a_base_cycle(tmp_path):
         load_config(tmp_path / "a.yaml")
 
 
-def test_noflip_config_is_the_default_with_two_overrides():
+@pytest.mark.parametrize(
+    ("experiment", "base", "override"),
+    [
+        ("tennis_v2_noflip", "default", {"horizontal_flip": False}),
+        ("tennis_v2_bg", "tennis_v2_noflip", {"background_frame": True}),
+        ("tennis_v2_mixup", "tennis_v2_noflip", {"mixup_alpha": 0.5}),
+        (
+            "tennis_v2_jitter",
+            "tennis_v2_noflip",
+            {
+                "color_jitter": {
+                    "brightness": 0.1,
+                    "contrast": 0.1,
+                    "saturation": 0.1,
+                    "p": 0.5,
+                }
+            },
+        ),
+    ],
+)
+def test_experiment_config_is_its_base_with_two_overrides(experiment, base, override):
     configs = pathlib.Path(__file__).parent.parent / "configs"
-    default = load_config(configs / "default.yaml")
-    noflip = load_config(configs / "tennis_v2_noflip.yaml")
-    assert noflip == default | {
-        "horizontal_flip": False,
-        "experiment_name": "tennis_v2_noflip",
-    }
-
-
-def test_bg_config_is_the_noflip_config_with_two_overrides():
-    configs = pathlib.Path(__file__).parent.parent / "configs"
-    noflip = load_config(configs / "tennis_v2_noflip.yaml")
-    bg = load_config(configs / "tennis_v2_bg.yaml")
-    assert bg == noflip | {"background_frame": True, "experiment_name": "tennis_v2_bg"}
-    assert bg["horizontal_flip"] is False
+    config = load_config(configs / f"{experiment}.yaml")
+    base_config = load_config(configs / f"{base}.yaml")
+    assert config == base_config | override | {"experiment_name": experiment}
+    assert config["horizontal_flip"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +725,74 @@ def test_unknown_optimizer_is_rejected_before_any_file_is_written():
         assert os.listdir(tmpdir) == []
 
 
+def test_mixup_changes_training_batches_and_leaves_validation_alone():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"mixup_alpha": 0.5, "batch_size": 4}
+        train_ds = _make_synthetic_dataset(num_samples=8)
+        val_ds = _make_synthetic_dataset(num_samples=4)
+        model = RecordingModel()
+        Trainer(model, SimpleLoss(), train_ds, val_ds, config).train()
+
+        received = torch.cat(model.train_inputs)
+        assert received.shape == (8, 9, 32, 64)
+        samples = train_ds.tensors[0]
+        mixed = [x for x in received if not any(torch.equal(x, s) for s in samples)]
+        assert mixed
+        assert torch.equal(torch.cat(model.eval_inputs), val_ds.tensors[0])
+
+
+def test_mixup_off_calls_nothing_and_leaves_the_batches_and_seed_stream_alone(
+    monkeypatch,
+):
+    def no_mixup(*args, **kwargs):
+        raise AssertionError("mixup_batch called with mixup_alpha 0")
+
+    monkeypatch.setattr("training.trainer.mixup_batch", no_mixup)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir, epochs=2)
+        assert config["mixup_alpha"] == 0.0
+        train_ds = _make_synthetic_dataset(num_samples=4)
+        val_ds = _make_synthetic_dataset(num_samples=2)
+        model = RecordingModel()
+        Trainer(model, SimpleLoss(), train_ds, val_ds, config).train()
+        rng_after = torch.get_rng_state()
+        cuda_rng_after = (
+            torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        )
+        monkeypatch.undo()
+
+        # What a Trainer fed the model before mixup existed: its loaders'
+        # batches under the same seed, training then validation each epoch.
+        reference = Trainer(
+            SimpleModel(),
+            SimpleLoss(),
+            train_ds,
+            val_ds,
+            config | {"experiment_name": "reference"},
+        )
+        expected = []
+        for _ in range(config["epochs"]):
+            expected += [frames for frames, _ in reference.train_loader]
+            list(reference.val_loader)
+
+        assert len(model.train_inputs) == len(expected) == 4
+        assert all(torch.equal(a, b) for a, b in zip(model.train_inputs, expected))
+        # No random number was drawn beyond the loaders' own.
+        assert torch.equal(torch.get_rng_state(), rng_after)
+        if cuda_rng_after is not None:
+            assert torch.equal(torch.cuda.get_rng_state(), cuda_rng_after)
+
+
+@pytest.mark.parametrize("alpha", [-0.1, float("nan"), "0.5", True])
+def test_bad_mixup_alpha_is_rejected_before_any_file_is_written(alpha):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"mixup_alpha": alpha}
+        ds = _make_synthetic_dataset()
+        with pytest.raises(ValueError, match="mixup_alpha"):
+            Trainer(SimpleModel(), SimpleLoss(), ds, ds, config)
+        assert os.listdir(tmpdir) == []  # holds checkpoint_dir and log_dir
+
+
 def test_every_default_config_key_is_read_by_the_code():
     """A key nothing reads looks like a setting but changes nothing."""
     repo = pathlib.Path(__file__).parent.parent
@@ -781,7 +875,7 @@ def test_step_loss_logged_every_log_every_steps(caplog):
         ]
         assert len(step_logs) == 4  # 2 epochs x 2 steps, one line per step
         step_line = re.compile(
-            r"Step (\d+) -- loss: \d+\.\d{4}, (\d+\.\d) steps/s"
+            r"Step (\d+) -- loss: \d\.\d{3}e[+-]\d\d, (\d+\.\d) steps/s"
             r"(, peak memory: \d+ MiB)?"
         )
         for step, message in enumerate(step_logs, start=1):
@@ -801,12 +895,33 @@ def test_epoch_log_reports_train_and_validation_time(caplog):
             r.getMessage() for r in caplog.records if r.getMessage().startswith("Epoch")
         ]
         epoch_line = (
-            r"Epoch {}/2 -- loss: \d+\.\d{{4}}, F1: \d\.\d{{4}}, prec: \d\.\d{{4}}, "
-            r"rec: \d\.\d{{4}}, train \d+\.\d s, val \d+\.\d s"
+            r"Epoch {}/2 -- loss: \d\.\d{{3}}e[+-]\d\d, F1: \d\.\d{{4}}, "
+            r"prec: \d\.\d{{4}}, rec: \d\.\d{{4}}, train \d+\.\d s, val \d+\.\d s"
         )
         assert len(epoch_logs) == 2
         for epoch, message in enumerate(epoch_logs, start=1):
             assert re.fullmatch(epoch_line.format(epoch), message), message
+
+
+class TinyConstantLoss(nn.Module):
+    """A loss of 1.23e-5 at every step, about where real training is by epoch 5."""
+
+    def forward(self, logits, target):
+        return logits.sum() * 0 + 1.23e-5
+
+
+def test_small_loss_is_logged_in_scientific_notation(caplog):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = _make_test_config(tmpdir) | {"log_every": 1}
+        ds = _make_synthetic_dataset(num_samples=4)
+        with caplog.at_level("INFO", logger="training.trainer"):
+            Trainer(SimpleModel(), TinyConstantLoss(), ds, ds, config).train()
+        messages = [r.getMessage() for r in caplog.records]
+        step_logs = [m for m in messages if m.startswith("Step ")]
+        epoch_logs = [m for m in messages if m.startswith("Epoch ")]
+        assert len(step_logs) == 2 and len(epoch_logs) == 1
+        for message in step_logs + epoch_logs:
+            assert "-- loss: 1.230e-05, " in message, message
 
 
 def test_ensure_compile_supported_reports_failure(monkeypatch):

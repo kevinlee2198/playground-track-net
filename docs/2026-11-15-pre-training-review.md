@@ -71,7 +71,7 @@ The spec's "PixelShuffle(4)" note is a misreading: the SDK uses PixelShuffle(16)
 | Heatmap target | Binary disc, radius 30 px | Radius 2.5 at 512x288 (V3, V4, WASB, BlurBall); Gaussian σ = 3.5 (RacketVision). Only the arXiv V5 paper says 30 |
 | Training window stride | 3 (non-overlapping) | 1 (V3, V4, WASB, RacketVision) |
 | Colour jitter | Independent per frame | Once per window (WASB) |
-| Mixup | Implemented, not wired in | Batch-level, α = 0.5 (V3: +0.29 F1) |
+| Mixup | Implemented, not wired in | Batch-level, α = 0.5 (V3: +0.29 points F1) |
 | Background frame | None | Median frame concatenated (V3, RacketVision, NYCU V5) |
 | Optimiser | AdamW 1e-4, batch 2 | Adam 1e-3, batch 8–10 (V3, WASB) |
 | Far detection in metrics | Counted as FP and FN | FP only (V3, V4, WASB); RacketVision matches ours |
@@ -80,7 +80,7 @@ The spec's "PixelShuffle(4)" note is a misreading: the SDK uses PixelShuffle(16)
 
 Batch size 2 traces back to the Keras setup of TrackNetV2/V4. With GroupNorm it affects only gradient noise.
 
-The "Ours" column is the code as reviewed. Heatmap radius, training stride, colour jitter, far-detection counting and tolerance space have since changed (§4.2); mixup, background frame, optimiser and post-processing have not.
+The "Ours" column is the code as reviewed. Heatmap radius, training stride, colour jitter, far-detection counting and tolerance space have since changed (§4.2); mixup, background frame, optimiser and post-processing have not. *Update, 2026-11-16:* mixup (`mixup_alpha`, §5 item 6), the background frame (`background_frame`, [results document](2026-11-16-training-results.md) §5) and the optimiser (`optimizer` in `configs/default.yaml`, Adam or AdamW) are now config settings.
 
 ## 4. Code readiness
 
@@ -194,9 +194,9 @@ This is a sanity check that the model learns, not a result: one epoch of thirty,
 3. **On-device model.** The April recommendation to swap to WASB is not settled. A fair bake-off has three candidates: V2 with background frame, WASB-HRNet, and a width-scaled MBConv U-Net in the style of NYCU's Lite model.
 4. **Pickleball data.** Requires our own recordings. If we annotate, label the centre of the blur streak, which BlurBall reports is worth +0.4 to +1.5 F1 across models.
 5. **Batch size and learning rate.** Batch 2 ran at 8.6–8.7 steps per second through the full epoch (8.8–8.9 after warm-up in the 300-step run) and peaks at 1,769 MiB. Batch 8 peaked at 6,656 MiB in training and then ran out of GPU memory as validation started; batch 4 was not tried. Reference codebases use Adam at 1e-3 with batch 8–10 (§3.3).
-6. **Mixup** is implemented (`data/transforms.py`) but not wired into training. TrackNetV3 reports +0.29 F1 from it.
+6. **Mixup** is implemented (`data/transforms.py`) but not wired into training. TrackNetV3 reports +0.29 F1 from it. *Update, 2026-11-16:* it is wired in as `mixup_alpha` (TrackNetV3's sample mixup on training batches; 0, the default, turns it off), and run `tennis_v2_mixup` is planned. The +0.29 is percentage points: F1 from 97.44% to 97.73% (their Table 2), with the background image already in the input.
 7. **Median background frame.** Not in the code. It needs a 12-channel input, and `infer` and `evaluate` must first read the architecture from the checkpoint's config (limitation below). *Update, 2026-11-16:* the code is written (`background_frame: true`; `infer` and `evaluate` now build the model from the checkpoint's config), and run `tennis_v2_bg` is planned.
-8. **Colour jitter strength.** 0.3 brightness, contrast and saturation, always applied: stronger than WASB's (0.1 at p = 0.5). Tuning it is an experiment, not a fix.
+8. **Colour jitter strength.** 0.3 brightness, contrast and saturation, always applied: stronger than WASB's (0.1 at p = 0.5). Tuning it is an experiment, not a fix. *Update, 2026-11-16:* strength and probability are set in the config (`color_jitter`; the default is unchanged), and run `tennis_v2_jitter`, at WASB's strength, is planned.
 9. **`torch.compile` speed** is unmeasured here; it needs a C compiler (`sudo apt install build-essential`).
 
 **Known limitations left in place:**

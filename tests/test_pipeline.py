@@ -25,6 +25,7 @@ from data import (
     discover_tennis_clips,
     generate_heatmap,
     median_frame,
+    mixup_batch,
     source_to_model,
 )
 from inference.video_preprocess import extract_frames
@@ -33,6 +34,7 @@ from models import TrackNet, build_model
 from training.run import (
     _build_datasets,
     _source_res_distance,
+    _warn_config_changes,
     load_config,
     run_evaluation,
     run_training,
@@ -106,6 +108,33 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
     run_inference(args)
     with open(out_csv) as f:
         assert len(list(csv.DictReader(f))) == 6
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_training_with_mixup_trains_and_validates(
+    tennis_root, tmp_path, monkeypatch, background
+):
+    calls = []
+
+    def counting_mixup(frames, heatmaps, alpha):
+        calls.append(alpha)
+        return mixup_batch(frames, heatmaps, alpha)
+
+    monkeypatch.setattr("training.trainer.mixup_batch", counting_mixup)
+    config = _fast_training_config(
+        tennis_root,
+        tmp_path,
+        epochs=1,
+        max_steps=2,
+        background_frame=background,
+        mixup_alpha=0.5,
+    )
+    run_training(config)
+    assert calls == [0.5, 0.5]  # once per training step
+    checkpoint = torch.load(
+        tmp_path / "checkpoints" / "e2e" / "latest.pt", weights_only=True
+    )
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (1, 2)
 
 
 class _RecordingModel(nn.Module):
@@ -318,6 +347,175 @@ def test_resume_says_changed_optimizer_settings_have_no_effect(
     )
 
 
+@pytest.mark.parametrize("existing_run", [False, True])
+def test_resume_from_missing_file_says_so(tennis_root, tmp_path, existing_run):
+    config = _fast_training_config(tennis_root, tmp_path)
+    checkpoints = tmp_path / "checkpoints"
+    if existing_run:
+        latest = checkpoints / "e2e" / "latest.pt"
+        latest.parent.mkdir(parents=True)
+        latest.write_bytes(b"checkpoint")
+    before = sorted(checkpoints.rglob("*"))
+    typo = checkpoints / "e2e" / "latest.p"
+    with pytest.raises(FileNotFoundError) as err:
+        run_training(config, resume=typo)
+    assert str(err.value) == f"resume checkpoint {typo} does not exist"
+    assert sorted(checkpoints.rglob("*")) == before  # nothing created
+    assert not (tmp_path / "runs").exists()
+
+
+def test_resume_from_directory_says_so(tennis_root, tmp_path):
+    config = _fast_training_config(tennis_root, tmp_path)
+    checkpoints = tmp_path / "checkpoints"
+    run_dir = checkpoints / "e2e"
+    run_dir.mkdir(parents=True)
+    with pytest.raises(IsADirectoryError) as err:
+        run_training(config, resume=run_dir)
+    assert str(err.value) == (
+        f"resume checkpoint {run_dir} is a directory, not a checkpoint file"
+    )
+    assert list(checkpoints.rglob("*")) == [run_dir]  # nothing created
+    assert not (tmp_path / "runs").exists()
+
+
+def test_resume_from_own_best_refuses_to_replace_latest(tennis_root, tmp_path):
+    config = _fast_training_config(tennis_root, tmp_path)
+    latest = tmp_path / "checkpoints" / "e2e" / "latest.pt"
+    latest.parent.mkdir(parents=True)
+    latest.write_bytes(b"latest")
+    best = latest.with_name("best.pt")
+    best.write_bytes(b"best")
+    with pytest.raises(FileExistsError) as err:
+        run_training(config, resume=best)
+    assert str(err.value) == (
+        f"continuing from {best} would replace this run's own {latest}: set a "
+        "new experiment_name to branch a new run from it"
+    )
+    assert latest.read_bytes() == b"latest"  # untouched
+    assert not (tmp_path / "runs").exists()
+
+
+def test_resume_refuses_to_overwrite_another_experiments_checkpoint(
+    tennis_root, tmp_path, monkeypatch
+):
+    def config(name, **overrides):
+        return _fast_training_config(
+            tennis_root, tmp_path, experiment_name=name, **overrides
+        )
+
+    run_training(config("a", epochs=1, max_steps=2))
+    run_training(config("b", epochs=1, max_steps=2))
+    checkpoints = tmp_path / "checkpoints"
+    latest_a = checkpoints / "a" / "latest.pt"
+    latest_b = checkpoints / "b" / "latest.pt"
+    before = latest_b.read_bytes()
+
+    with pytest.raises(FileExistsError) as err:
+        run_training(config("b", epochs=2, max_steps=4), resume=latest_a)
+    assert str(latest_b) in str(err.value)
+    assert str(latest_a) in str(err.value)
+    assert "experiment_name" in str(err.value)
+    assert latest_b.read_bytes() == before  # untouched
+
+    # An experiment with no checkpoint yet may start from another run's.
+    run_training(config("c", epochs=2, max_steps=4), resume=latest_a)
+    checkpoint = torch.load(checkpoints / "c" / "latest.pt", weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+
+    # Its own latest.pt, named through a symlink, is the same file.
+    link = tmp_path / "link.pt"
+    link.symlink_to(latest_a)
+    run_training(config("a", epochs=2, max_steps=4), resume=link)
+    checkpoint = torch.load(latest_a, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (2, 4)
+
+    # And so is a path relative to the working directory.
+    monkeypatch.chdir(tmp_path)
+    run_training(
+        config("a", epochs=3, max_steps=6), resume=Path("checkpoints/a/latest.pt")
+    )
+    checkpoint = torch.load(latest_a, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (3, 6)
+
+
+class _PassedTheGuard(Exception):
+    """Raised by a stubbed dataset build: run_training got past its resume guard."""
+
+
+def test_resume_through_symlinked_checkpoint_directory(
+    tennis_root, tmp_path, monkeypatch
+):
+    # The layout real runs use: a git worktree whose checkpoints directory is a
+    # symlink to the main checkout's.
+    real = tmp_path / "main" / "checkpoints"
+    real.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "checkpoints").symlink_to(real, target_is_directory=True)
+    monkeypatch.chdir(worktree)
+    config = _fast_training_config(
+        tennis_root, tmp_path, checkpoint_dir="checkpoints", epochs=1, max_steps=2
+    )
+    run_training(config)
+    latest = real / "e2e" / "latest.pt"
+    assert latest.is_file()
+
+    def passed_the_guard(config, splits):
+        raise _PassedTheGuard
+
+    monkeypatch.setattr("training.run._build_datasets", passed_the_guard)
+    for resume in (Path("checkpoints/e2e/latest.pt"), latest):
+        with pytest.raises(_PassedTheGuard):
+            run_training(config, resume=resume)
+    with pytest.raises(FileExistsError, match="--resume"):
+        run_training(config)
+
+
+def _warnings_for(caplog, stored: dict, current: dict) -> list[str]:
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        _warn_config_changes(stored, current)
+    return _config_change_warnings(caplog)
+
+
+# What the code did before each of these config keys existed.
+_OLD_BEHAVIOUR = {
+    "horizontal_flip": True,
+    "background_frame": False,
+    "color_jitter": {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "p": 1.0},
+    "mixup_alpha": 0.0,
+}
+
+
+@pytest.mark.parametrize(
+    ("key", "new"),
+    [
+        ("horizontal_flip", False),
+        ("background_frame", True),
+        ("color_jitter", _OLD_BEHAVIOUR["color_jitter"] | {"p": 0.5}),
+        ("mixup_alpha", 0.5),
+    ],
+)
+def test_resume_reads_a_key_a_checkpoint_predates_as_its_old_behaviour(
+    caplog, key, new
+):
+    stored = {"seed": 42}  # saved before any of these keys
+    current = {"seed": 42} | _OLD_BEHAVIOUR
+    assert _warnings_for(caplog, stored, current) == []
+
+    warnings = _warnings_for(caplog, stored, current | {key: new})
+    assert len(warnings) == 1, warnings
+    assert f"{key}: {_OLD_BEHAVIOUR[key]!r} -> {new!r}" in warnings[0]
+    for other in _OLD_BEHAVIOUR.keys() - {key}:
+        assert other not in warnings[0]
+
+
+def test_resume_shows_a_key_the_current_config_lacks_as_none(caplog):
+    warnings = _warnings_for(caplog, {"horizontal_flip": True}, {})
+    assert len(warnings) == 1, warnings
+    assert "horizontal_flip: True -> None" in warnings[0]
+
+
 def test_cli_log_lines_carry_timestamp_level_and_logger(tennis_root, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(_config_for(tennis_root)))
@@ -353,6 +551,35 @@ def test_train_split_flips_only_when_the_config_says_so(tennis_root, flip):
     kinds = [type(t) for t in cast(Compose, train_clip.transform).transforms]
     assert (HorizontalFlip in kinds) is flip
     assert FrameColorJitter in kinds
+    assert val_clip.transform is None
+
+
+@pytest.mark.parametrize(
+    ("color_jitter", "strength", "p"),
+    [
+        (None, 0.3, 1.0),  # the default config's values
+        ({"brightness": 0.1, "contrast": 0.1, "saturation": 0.1, "p": 0.5}, 0.1, 0.5),
+    ],
+)
+def test_train_split_jitters_with_the_configured_strength_and_p(
+    tennis_root, color_jitter, strength, p
+):
+    config = _config_for(tennis_root)
+    if color_jitter is not None:
+        config["color_jitter"] = color_jitter
+    datasets = _build_datasets(config, ("train", "val"))
+    train_clip = cast(TrackNetDataset, datasets["train"].datasets[0])
+    val_clip = cast(TrackNetDataset, datasets["val"].datasets[0])
+    (jitter,) = [
+        t
+        for t in cast(Compose, train_clip.transform).transforms
+        if isinstance(t, FrameColorJitter)
+    ]
+    expected = pytest.approx((1 - strength, 1 + strength))
+    assert jitter.jitter.brightness == expected
+    assert jitter.jitter.contrast == expected
+    assert jitter.jitter.saturation == expected
+    assert jitter.p == p
     assert val_clip.transform is None
 
 
