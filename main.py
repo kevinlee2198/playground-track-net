@@ -86,6 +86,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of overlays, spread across train, val and test (default: 12)",
     )
 
+    # Extract-frames subcommand
+    extract_parser = subparsers.add_parser(
+        "extract-frames",
+        help="Decode the badminton dataset's rally videos into labelled frame images",
+    )
+    extract_parser.add_argument(
+        "--root",
+        type=str,
+        required=True,
+        help="Badminton dataset root, holding <part>/<match>/video and csv",
+    )
+    extract_parser.add_argument(
+        "--jpeg-quality",
+        type=int,
+        default=95,
+        help="JPEG quality of the written frames, 0-100 (default: 95)",
+    )
+
     # Infer subcommand
     infer_parser = subparsers.add_parser("infer", help="Run inference on a video")
     infer_parser.add_argument(
@@ -280,6 +298,10 @@ def main():
 
         paths = write_label_overlays(load_config(args.config), args.out, args.count)
         print(f"Wrote {len(paths)} overlays to {args.out}")
+    elif args.command == "extract-frames":
+        from data import extract_badminton_frames
+
+        extract_badminton_frames(args.root, jpeg_quality=args.jpeg_quality)
 
 
 if __name__ == "__main__":

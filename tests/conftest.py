@@ -72,3 +72,68 @@ def tennis_root(tmp_path: Path) -> Path:
             )
             writer.writerows(TENNIS_LABEL_ROWS)
     return root
+
+
+BADMINTON_SIZE = (320, 180)  # width, height: 16:9 like the real 1280x720 videos
+BADMINTON_LABEL_ROWS = [  # Frame, Visibility, X, Y in 320x180 coordinates
+    (0, 1, 160, 90),
+    (1, 1, 165, 85),
+    (2, 0, 0, 0),
+    (3, 1, 175, 75),
+    (4, 1, 180, 70),
+    (5, 1, 185, 65),
+]
+# <part>/<match>/<rally> -> video frames. Match names repeat across parts, and
+# match10 sorts after match2 only in natural order.
+BADMINTON_RALLIES = {
+    "Professional/match10/1_01_01": 9,  # 3 trailing video frames without labels
+    "Professional/match2/1_01_10": 6,
+    "Professional/match2/1_01_02": 6,
+    "Amateur/match2/1_01_01": 6,
+    "Test/match1/1_01_01": 6,
+}
+
+
+def badminton_grey(i: int) -> int:
+    """The uniform grey level of video frame ``i`` in the badminton fixture."""
+    return 25 * i
+
+
+def write_badminton_video(path: Path, num_frames: int) -> None:
+    """An mp4v video of ``num_frames`` uniform grey frames, frame i at
+    ``badminton_grey(i)``. mp4v is lossy: decoded levels are a few units off."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    width, height = BADMINTON_SIZE
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter.fourcc(*"mp4v"), 25.0, (width, height)
+    )
+    assert writer.isOpened(), f"cannot write {path}"
+    for i in range(num_frames):
+        writer.write(np.full((height, width, 3), badminton_grey(i), dtype=np.uint8))
+    writer.release()
+
+
+def write_badminton_labels(
+    path: Path, rows: list[tuple[int, int, int, int]] = BADMINTON_LABEL_ROWS
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Frame", "Visibility", "X", "Y"])
+        writer.writerows(rows)
+
+
+@pytest.fixture
+def badminton_root(tmp_path: Path) -> Path:
+    """Create a miniature CoachAI badminton dataset, before frame extraction:
+    <part>/<match>/video/<rally>.mp4 and <part>/<match>/csv/<rally>_ball.csv.
+
+    Every rally has the six label rows of ``BADMINTON_LABEL_ROWS``; its video
+    has the number of frames ``BADMINTON_RALLIES`` gives.
+    """
+    root = tmp_path / "badminton"
+    for rally, num_frames in BADMINTON_RALLIES.items():
+        match, name = rally.rsplit("/", 1)
+        write_badminton_video(root / match / "video" / f"{name}.mp4", num_frames)
+        write_badminton_labels(root / match / "csv" / f"{name}_ball.csv")
+    return root

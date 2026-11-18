@@ -22,7 +22,7 @@ from data import (
     Label,
     TrackNetDataset,
     build_dataset,
-    discover_tennis_clips,
+    discover_clips,
     source_to_model,
     split_clips,
     visibility_counts,
@@ -89,16 +89,14 @@ def _build_datasets(
     the result.
 
     Raises:
-        ValueError: If a split has no clips and ``skip_empty`` is false.
+        ValueError: If ``data.format`` is not supported, or a split has no
+            clips and ``skip_empty`` is false.
+        FileNotFoundError: If a clip of a split being built has no frames
+            directory (a badminton rally not yet extracted). Clips of the
+            other splits are not checked.
     """
     data = config["data"]
-    if data["format"] != "tennis":
-        raise ValueError(
-            f"unknown data.format {data['format']!r}: only 'tennis' is supported"
-        )
-    clips = split_clips(
-        discover_tennis_clips(data["root"]), data["val_groups"], data["test_groups"]
-    )
+    clips = split_clips(discover_clips(data), data["val_groups"], data["test_groups"])
     width, height = config["input_size"]
     datasets = {}
     for split in splits:
@@ -360,7 +358,8 @@ def write_label_overlays(
     spaced within each split; if the splits hold fewer, all of them are written. Each PNG shows the frame at model resolution
     with a hollow circle at the rescaled label, beside a 4x enlargement of the
     64x64 region centred on the label. Files are named
-    ``<split>_<game>_<clip>_<frame>.png``.
+    ``<split>_<group>_<clip>_<frame>.png``, with any ``/`` in the group (a
+    badminton ``<part>/<match>``) written as ``-``.
 
     Logs, per split, the clip count, the frame count, how many label rows
     hold each raw visibility value, how many visible labels lie outside
@@ -414,15 +413,17 @@ def write_label_overlays(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # A TrackNetDataset does not know its clip's group: look it up by frames_dir.
+    groups = {c.frames_dir: c.group for c in discover_clips(config["data"])}
     shares = _round_robin_shares(count, {s: len(c) for s, c in candidates.items()})
     paths = []
     for split, n in shares.items():
         frames = candidates[split]
         for k in range(n):
             clip, i = frames[(2 * k + 1) * len(frames) // (2 * n)]  # evenly spaced
-            game, clip_name = clip.frames_dir.parent.name, clip.frames_dir.name
+            group = groups[clip.frames_dir].replace("/", "-")
             stem = clip.frame_paths[i].stem
-            path = out_dir / f"{split}_{game}_{clip_name}_{stem}.png"
+            path = out_dir / f"{split}_{group}_{clip.frames_dir.name}_{stem}.png"
             if not cv2.imwrite(str(path), _label_overlay(clip, i)):
                 raise OSError(f"failed to write {path}")
             paths.append(path)

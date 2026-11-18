@@ -3,6 +3,7 @@
 import csv
 import logging
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ from data import (
     background_indices,
     build_dataset,
     discover_tennis_clips,
+    extract_badminton_frames,
     generate_heatmap,
     median_frame,
     mixup_batch,
@@ -56,25 +58,27 @@ def _config_for(tennis_root, **data_overrides):
     return config
 
 
+def _fast_settings(tmp_path) -> dict:
+    """Config keys that train for a few steps at low resolution on CPU or GPU,
+    writing under ``tmp_path``."""
+    return {
+        # Small for speed; the U-Net is fully convolutional.
+        "input_size": [128, 72],
+        "batch_size": 2,
+        "num_workers": 0,
+        "pin_memory": False,
+        "persistent_workers": False,
+        "amp_dtype": "float32",
+        "compile_model": False,
+        "checkpoint_dir": str(tmp_path / "checkpoints"),
+        "log_dir": str(tmp_path / "runs"),
+        "experiment_name": "e2e",
+    }
+
+
 def _fast_training_config(tennis_root, tmp_path, **overrides):
-    """A config that trains for a few steps at low resolution on CPU or GPU."""
-    return (
-        _config_for(tennis_root)
-        | {
-            # Small for speed; the U-Net is fully convolutional.
-            "input_size": [128, 72],
-            "batch_size": 2,
-            "num_workers": 0,
-            "pin_memory": False,
-            "persistent_workers": False,
-            "amp_dtype": "float32",
-            "compile_model": False,
-            "checkpoint_dir": str(tmp_path / "checkpoints"),
-            "log_dir": str(tmp_path / "runs"),
-            "experiment_name": "e2e",
-        }
-        | overrides
-    )
+    """The tennis config with ``_fast_settings``, then ``overrides``."""
+    return _config_for(tennis_root) | _fast_settings(tmp_path) | overrides
 
 
 @pytest.mark.parametrize("background", [False, True])
@@ -851,3 +855,81 @@ def test_check_data_skips_empty_split(tennis_root, tmp_path, caplog):
     assert "test: no clips, skipped" in caplog.text
     assert len(paths) == 3
     assert {p.name.split("_")[0] for p in paths} == {"train", "val"}
+
+
+BADMINTON_CONFIG = CONFIG.with_name("badminton_v2.yaml")
+
+
+def _badminton_config(badminton_root, tmp_path) -> dict:
+    """The shipped badminton config, pointed at the miniature dataset, with
+    ``_fast_settings``: val Amateur/match2, test Test/match1."""
+    config = load_config(BADMINTON_CONFIG)
+    config["data"] |= {
+        "root": str(badminton_root),
+        "val_groups": ["Amateur/match2"],
+        "test_groups": ["Test/match1"],
+    }
+    return config | _fast_settings(tmp_path)
+
+
+def test_badminton_extract_check_data_train_evaluate(badminton_root, tmp_path, caplog):
+    # extract-frames through the CLI, as a user runs it
+    result = subprocess.run(
+        [sys.executable, "main.py", "extract-frames", "--root", str(badminton_root)],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parents[1],
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        "INFO data.extract: extract-frames: 5 rallies extracted, 0 skipped "
+        "(already extracted), 30 frames written, 3 surplus video frames dropped"
+    ) in result.stderr
+
+    config = _badminton_config(badminton_root, tmp_path) | {
+        "epochs": 1,
+        "max_steps": 2,
+    }
+
+    with caplog.at_level(logging.INFO, logger="training.run"):
+        paths = write_label_overlays(config, tmp_path / "overlays", count=3)
+    # The middle visible frame of each split; train's is in its second rally.
+    assert [p.name for p in paths] == [
+        "train_Professional-match2_1_01_10_0003.png",
+        "val_Amateur-match2_1_01_01_0003.png",
+        "test_Test-match1_1_01_01_0003.png",
+    ]
+    assert "train: 3 clips, 18 frames, visibility {0: 3, 1: 15}" in caplog.text
+    assert "val: 1 clips, 6 frames, visibility {0: 1, 1: 5}" in caplog.text
+    assert "source sizes 320x180" in caplog.text
+
+    run_training(config)
+    ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
+    checkpoint = torch.load(ckpt, weights_only=True)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (1, 2)
+    assert checkpoint["config"]["data"]["format"] == "badminton"
+
+    result = run_evaluation(config, ckpt, split="val")
+    assert result["frames"] == 6
+    for protocol in ("model_res_4px", "source_res_4px"):
+        m = result[protocol]
+        assert m["tp"] + m["tn"] + m["fp1"] + m["fp2"] + m["fn"] == 6
+
+
+def test_badminton_splits_need_frames_only_when_built(badminton_root, tmp_path):
+    # Every rally extracted but the test split's.
+    extract_badminton_frames(badminton_root)
+    test_frames = badminton_root / "Test" / "match1" / "frames" / "1_01_01"
+    shutil.rmtree(test_frames)
+    config = _badminton_config(badminton_root, tmp_path)
+
+    datasets = _build_datasets(config, ("train", "val"))
+    assert (len(datasets["train"].datasets), len(datasets["val"].datasets)) == (3, 1)
+
+    with pytest.raises(FileNotFoundError) as err:
+        _build_datasets(config, ("test",))
+    message = str(err.value)
+    assert message.startswith(f"Test/match1/1_01_01: no frames directory {test_frames}")
+    assert message.endswith(
+        f"run `main.py extract-frames --root {badminton_root}` first"
+    )
