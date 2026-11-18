@@ -8,7 +8,7 @@ TrackNet is a heatmap-based deep learning network that detects small, fast-movin
 
 **Why TrackNet over YOLO/DETR?** Single-frame detectors struggle with sub-10px, motion-blurred balls. TrackNet's multi-frame input achieves 97.5% tracking accuracy vs 53.5% for YOLOv7 on shuttlecock tracking.
 
-**Status (2026-11-17):** three full runs are done. V2 trained for 30 epochs on the TrackNet tennis dataset reaches F1 0.949 on the validation game at 4 px, 512x288, and 0.771 at 4 px of the 1280x720 source. Most of that gap is one constant 1.1 px horizontal offset, caused by the flip augmentation meeting an offset in the dataset's labels: a second run without the flip has no offset and scores 0.903 at source resolution (0.947 at 4 px, 512x288). Nothing has been evaluated on the test split. A median background frame as a fourth input image (`background_frame: true`) was tried on top of the no-flip recipe (run `tennis_v2_bg`): 0.949 and 0.909, level with the no-flip run as far as one run can show, so it stays off by default. Mixup (`mixup_alpha`) and colour-jitter strength (`color_jitter`) are config switches; their runs, `tennis_v2_mixup` and `tennis_v2_jitter`, are planned and not started. Results and analysis: [docs/2026-11-16-training-results.md](docs/2026-11-16-training-results.md). Open decisions: [Known Issues](#known-issues) and §5 of [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md).
+**Status (2026-11-17):** three full runs are done. V2 trained for 30 epochs on the TrackNet tennis dataset reaches F1 0.949 on the validation game at 4 px, 512x288, and 0.771 at 4 px of the 1280x720 source. Most of that gap is one constant 1.1 px horizontal offset, caused by the flip augmentation meeting an offset in the dataset's labels: a second run without the flip has no offset and scores 0.903 at source resolution (0.947 at 4 px, 512x288). Nothing has been evaluated on the test split. A median background frame as a fourth input image (`background_frame: true`) was tried on top of the no-flip recipe (run `tennis_v2_bg`): 0.949 and 0.909, level with the no-flip run as far as one run can show, so it stays off by default. Mixup (`mixup_alpha`) and colour-jitter strength (`color_jitter`) are config switches; their runs, `tennis_v2_mixup` and `tennis_v2_jitter`, are planned and not started. Badminton data loading is implemented (`data.format: badminton`, configs/badminton_v2.yaml: 10 epochs, flip off, validation on Professional/match22, Professional/match23 and Amateur/match3, test on the dataset's own Test part); the real frames have not been extracted yet and nothing has been trained on badminton. Results and analysis: [docs/2026-11-16-training-results.md](docs/2026-11-16-training-results.md). Open decisions: [Known Issues](#known-issues) and §5 of [docs/2026-11-15-pre-training-review.md](docs/2026-11-15-pre-training-review.md).
 
 ## Architecture
 
@@ -54,7 +54,8 @@ playground-track-net/
     checkpoint.py      # build_model (from a config), load_model (as a checkpoint was trained), load_model_weights
   data/
     labels.py          # Label loader: our CSV layout and the tennis Label.csv
-    sources.py         # Tennis clip discovery, split by game, build_dataset
+    sources.py         # Tennis and badminton clip discovery (discover_clips picks by data.format), split by group, build_dataset
+    extract.py         # Badminton: decode rally videos into labelled frame images (extract-frames)
     dataset.py         # TrackNetDataset (sliding windows over one clip's frames)
     background.py      # A clip's median background frame
     heatmap.py         # Binary-disc heatmaps; source <-> model coordinate mapping
@@ -75,14 +76,15 @@ playground-track-net/
     tennis_v2_bg.yaml   # tennis_v2_noflip.yaml plus the median background frame
     tennis_v2_mixup.yaml  # tennis_v2_noflip.yaml plus mixup (mixup_alpha: 0.5)
     tennis_v2_jitter.yaml # tennis_v2_noflip.yaml with WASB's colour jitter (0.1 at p 0.5)
+    badminton_v2.yaml   # default.yaml on the CoachAI badminton dataset, without the flip, 10 epochs
   tests/
     conftest.py         # Shared synthetic-data fixtures
     test_models.py      # Backbone, loss, V2 wrapper, V5 wiring, model loading (88 tests)
     test_mdd.py         # MDD module unit tests (21 tests)
-    test_data.py        # Labels, clip discovery, dataset, background frame, heatmap, transforms (107 tests)
-    test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (66 tests)
+    test_data.py        # Labels, clip discovery, badminton frame extraction, dataset, background frame, heatmap, transforms (136 tests)
+    test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (67 tests)
     test_inference.py   # Postprocess, tracker, video preprocess (30 tests)
-    test_pipeline.py    # End to end: train, evaluate, check-data, infer (52 tests)
+    test_pipeline.py    # End to end: train, evaluate, check-data, infer, badminton extract-frames (54 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
@@ -90,7 +92,7 @@ playground-track-net/
     2026-04-14-architecture-review-synthesis.md  # Full-product (iOS app) architecture review
     superpowers/specs/  # Design specifications (ball tracker, on-device iOS slice)
     superpowers/plans/  # Implementation plans (V2 model/data/training/inference, V5 sigmoid/MDD/R-STR; 2026-11-15-pre-training-fixes.md)
-  main.py              # CLI: train | evaluate | check-data | infer
+  main.py              # CLI: train | evaluate | check-data | extract-frames | infer
 ```
 
 ## Implementation Status
@@ -100,15 +102,16 @@ playground-track-net/
 | Model V2 (UNet backbone, WBCE loss, wrapper, `build_model` / `load_model`) | Done | 88 in `test_models.py` |
 | Model V5 (MDD module) | Done | 21 in `test_mdd.py` |
 | Model V5 (R-STR head + `tracknet_v5()` factory) | Done | covered in `test_models.py` |
-| Data pipeline (label loader, tennis splits, dataset, heatmaps, augmentations) | Done; run on the real tennis dataset | 107 in `test_data.py` |
+| Data pipeline (label loader, tennis splits, dataset, heatmaps, augmentations) | Done; run on the real tennis dataset | 136 in `test_data.py` |
+| Badminton data (`extract-frames`, clip discovery, `configs/badminton_v2.yaml`) | Done; real frames not yet extracted, nothing trained on badminton | covered in `test_data.py`, `test_training.py`, `test_pipeline.py` |
 | Median background frame (`background_frame: true`) | Done; one run (`tennis_v2_bg`), level with the no-flip run | covered in `test_data.py`, `test_models.py`, `test_inference.py`, `test_pipeline.py` |
 | Mixup (`mixup_alpha`) and colour-jitter settings (`color_jitter`) | Done; not yet trained on real data | covered in `test_data.py`, `test_training.py`, `test_pipeline.py` |
-| Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; one full 30-epoch run | 66 in `test_training.py` |
+| Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; one full 30-epoch run | 67 in `test_training.py` |
 | Inference (postprocess, Kalman tracker, video I/O) | Done; run on one real clip | 30 in `test_inference.py` |
-| CLI (`train` / `evaluate` / `check-data` / `infer` subcommands) | Done | 52 in `test_pipeline.py` |
+| CLI (`train` / `evaluate` / `check-data` / `extract-frames` / `infer` subcommands) | Done | 54 in `test_pipeline.py` |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 364 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 396 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
@@ -193,6 +196,29 @@ uv run python main.py evaluate --config configs/default.yaml \
 - **Label coordinates** are mapped to 512x288 through pixel centres, `x_model = (x_src + 0.5) * 512 / width - 0.5` (and the same for y), the way `cv2.resize` maps pixels; inference maps back with the inverse. This is a deliberate departure from the published code (TrackNetV3 scales by plain `x * scale`): with `cv2.resize`, plain scaling leaves the target 0.3 px off the ball at 1280→512, and horizontal flip reverses that offset on half the samples. The pixel-centre mapping avoids both.
 - **Tennis visibility 3** rows carry coordinates in the real files but are treated as ball-absent, as in WASB's config.
 
+### Train and evaluate on the badminton dataset
+
+`configs/badminton_v2.yaml` expects the CoachAI shuttlecock dataset at `datasets/badminton/<part>/<match>/` (`<part>` is `Professional`, `Amateur` or `Test`); set-up steps are in [docs/data-sources.md](docs/data-sources.md). It is `default.yaml` with `data.format: badminton`, the flip off, and 10 epochs with the learning-rate drops at epochs 6 and 8 (a badminton epoch has about 5.7 times as many steps as a tennis one). The dataset ships rally videos, and training reads frame images, so extract them once before anything else:
+
+```bash
+# Writes <part>/<match>/frames/<rally>/NNNN.jpg for every labelled frame of every rally,
+# Test included. Safe to interrupt and re-run: finished rallies are skipped.
+# Do not run two extractions on the same root at once.
+uv run python main.py extract-frames --root datasets/badminton [--jpeg-quality 95]
+
+# Then check-data, train and evaluate as for tennis, with this config.
+uv run python main.py check-data --config configs/badminton_v2.yaml --out /tmp/overlays-badminton
+uv run python main.py train --config configs/badminton_v2.yaml
+uv run python main.py evaluate --config configs/badminton_v2.yaml \
+  --weights checkpoints/badminton_v2/latest.pt --split val
+```
+
+- **A split needs frames only when it is built.** `train` and `evaluate --split val` need only the `Professional` and `Amateur` frames; `check-data` builds all three splits, so it also needs `Test` extracted. A rally of a built split without frames stops with an error naming it and the `extract-frames` command.
+- **Groups are `<part>/<match>`**, because match names repeat across parts. Validation is `Professional/match22`, `Professional/match23` and `Amateur/match3`; test is the dataset's own `Test` part, held out exactly like tennis game8–10. Overlay file names write the group with `-` for `/`.
+- **Frame `i` of a video is the label row `Frame == i`.** Some videos have more frames than their CSV has rows; those trailing frames are dropped and counted in the log. A video with fewer frames than rows, or a CSV whose frame ids are not exactly 0..N-1, stops extraction with an error naming the rally.
+- **Each rally is written to `frames/<rally>.partial` and renamed into place when complete.** A leftover `.partial` directory is redone, which is why two extractions must not share a root; a `frames/<rally>` directory that holds anything other than exactly the expected files, or an empty file, stops extraction, and is left for you to remove. Extraction stops at the first rally with an error; those finished before it are kept, and those after it (in the order Amateur, Professional, Test) are not started until it is dealt with.
+- **Container frame counts are checked.** A rally whose video container reports a frame count different from the frames decoded is logged as a warning and counted in the summary; what is written does not change.
+
 ### Use the model from Python
 
 ```python
@@ -269,5 +295,5 @@ Most of these state no data licence, and some are explicitly non-commercial. Che
 1. **Phase 1 — V2 components:** model, data, training, inference pipelines and CLI. **Implemented and run end to end on the real tennis dataset.**
 2. **Phase 2 — V5 architecture:** MDD module + R-STR head wired through `tracknet_v5()`. **Implemented, training deferred** (see the note under V5 above).
 3. **Phase 3 — Training runs (in progress):** the V2 tennis baseline is trained and analysed ([results](docs/2026-11-16-training-results.md)). The horizontal offset it exposed is removed by training without the flip (run `tennis_v2_noflip`, done). A median background frame as extra input made no difference one run can show (run `tennis_v2_bg`, done). Next: mixup and colour-jitter strength (both configurable; runs `tennis_v2_mixup` and `tennis_v2_jitter` planned), each against the no-flip run.
-4. **Phase 4 — Multi-sport and pickleball:** add badminton and multi-sport pre-training; collect and label our own pickleball footage.
+4. **Phase 4 — Multi-sport and pickleball:** add badminton (data loading and `configs/badminton_v2.yaml` done, not yet run on the real dataset) and multi-sport pre-training; collect and label our own pickleball footage.
 5. **Future:** On-device (iOS) deployment, court detection, shot classification, bounce visualisation, automated scoring. See the specs under `docs/`.

@@ -9,7 +9,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
 - `uv sync` — install deps
-- `uv run pytest tests/ -q -n 4` — run all tests (364 tests, 60–80 s; serial `-v` takes about as long)
+- `uv run pytest tests/ -q -n 4` — run all tests (396 tests, 60–80 s; serial `-v` takes about as long)
 - `uv run ruff format .` — format code
 - `uv run ruff check --fix .` — lint and auto-fix
 - `uv run ty check` — type check (12 pre-existing diagnostics as of 2026-11-15)
@@ -19,6 +19,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - `uv run pytest tests/test_inference.py -v` — inference tests only
 - `uv run pytest tests/test_mdd.py -v` — MDD module tests only
 - `uv run pytest tests/test_pipeline.py -v` — end-to-end train / evaluate / check-data / infer tests only
+- `uv run python main.py extract-frames --root datasets/badminton [--jpeg-quality 95]` — decode every badminton rally video into `<part>/<match>/frames/<rally>/NNNN.jpg`, one per label row; finished rallies are skipped on a re-run
 - `uv run python main.py check-data --config configs/default.yaml --out <dir> [--count 12]` — log per-split clip, frame and visibility counts; write label-overlay PNGs to `<dir>` (keep it outside the repo)
 - `uv run python main.py train --config configs/default.yaml [--max-steps N] [--resume checkpoints/<experiment_name>/latest.pt]` — train `build_model(config)` (12 input channels with `background_frame: true`, else 9) on the train split, validate on val each epoch; writes `checkpoints/<experiment_name>/latest.pt` every epoch, `best.pt` only when validation `f1` beats the best so far (starts at 0, so a run stuck at F1 0 has none), and TensorBoard logs in `runs/<experiment_name>/`. `--max-steps` is a total that counts steps restored by `--resume`, so N must exceed the checkpoint's step. `--resume` refuses, before writing anything, when the config's experiment directory already holds a `latest.pt` that is not the resume file (so another run's config cannot overwrite it, and resuming from the run's own `best.pt` needs a new `experiment_name`); a resume file that does not exist is reported as such
 - `uv run python main.py evaluate --config configs/default.yaml --weights <checkpoint.pt> --split val` — print JSON metrics under both protocols for the model the checkpoint was trained as. The default split is test: always pass `--split val` until the model is final
@@ -35,17 +36,17 @@ Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Architecture
 - models/ — U-Net backbone, TrackNet wrapper, WBCE loss, MDD module, R-STR head; checkpoint.py: `build_model` (the V2 model a config trains, 9 or 12 input channels), `load_model` (the model a checkpoint was trained as, plus its stored config), `load_model_weights`
-- data/ — label loader (labels.py: our CSV layout and the tennis `Label.csv`), clip discovery and split by game (sources.py), dataset, heatmap generation and coordinate mapping, transforms (`HorizontalFlip`, `FrameColorJitter`, `mixup_batch`, which the Trainer applies to training batches), median background frame (background.py)
+- data/ — label loader (labels.py: our CSV layout and the tennis `Label.csv`), clip discovery for tennis and badminton and split by group (sources.py; `discover_clips(config["data"])` picks the discovery function by `data.format`, and everything that finds clips goes through it), badminton frame extraction (extract.py, `extract-frames`), dataset, heatmap generation and coordinate mapping, transforms (`HorizontalFlip`, `FrameColorJitter`, `mixup_batch`, which the Trainer applies to training batches), median background frame (background.py)
 - training/ — trainer loop, evaluation metrics, run.py (`load_config`, which follows `base:`; builds the splits; entry points for train, evaluate, check-data)
-- configs/ — default.yaml has every key; experiment configs (tennis_v2_noflip.yaml; tennis_v2_bg.yaml, tennis_v2_mixup.yaml and tennis_v2_jitter.yaml, each tennis_v2_noflip plus one setting) name a base config with `base:` and set only what differs
+- configs/ — default.yaml has every key; experiment configs (tennis_v2_noflip.yaml; tennis_v2_bg.yaml, tennis_v2_mixup.yaml and tennis_v2_jitter.yaml, each tennis_v2_noflip plus one setting; badminton_v2.yaml, default.yaml on the badminton dataset without the flip and with 10 epochs) name a base config with `base:` and set only what differs
 - inference/ — postprocess, trajectory rectification, Kalman tracker, video I/O
 - utils/ — visualization (ball overlay drawing for annotated video output)
-- main.py — CLI: train | evaluate | check-data | infer
+- main.py — CLI: train | evaluate | check-data | extract-frames | infer
 - TrackNet(backbone, mdd=None, rstr=None) — V2 uses backbone only; V5 adds MDD + R-STR
 - tracknet_v5() factory in models/tracknet.py builds the full V5 stack
 
 ## Testing
-- Tests use synthetic data only: no downloaded datasets, no real video files. A test that trains must put `checkpoint_dir` and `log_dir` under `tmp_path` (`_fast_training_config`): the default ones hold real runs. The `tennis_root` fixture in tests/conftest.py is a miniature tennis dataset (1280x720 frames, real `Label.csv` header)
+- Tests use synthetic data only: no downloaded datasets, no real video files. A test that trains must put `checkpoint_dir` and `log_dir` under `tmp_path` (`_fast_training_config`): the default ones hold real runs. The `tennis_root` fixture in tests/conftest.py is a miniature tennis dataset (1280x720 frames, real `Label.csv` header); `badminton_root` is a miniature badminton dataset before extraction (320x180 mp4v videos the fixture writes, `Frame,Visibility,X,Y` CSVs, one video with 3 surplus frames). mp4v is lossy, so compare decoded frames with a tolerance
 - Tests must pass on CPU, but the Trainer picks CUDA when it is available, so on this machine Trainer and pipeline tests run on the GPU. Keep both working
 - Model tests use small tensors (batch=1-2, 288x512) to keep them fast
 - Training unit tests use stub models; tests/test_pipeline.py runs the real TrackNet at 128x72
@@ -56,6 +57,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - The baseline's predictions sit 1.1 px left of the labels on the validation game, caused by the flip augmentation (results doc §3–§4). Run `tennis_v2_noflip` (configs/tennis_v2_noflip.yaml, done) has no such offset (−0.01 px): validation F1 at its best epoch (15) is 0.947 at 4 px, 512x288 and 0.903 at 4 px of the source. Later experiments are compared with it. `configs/default.yaml` still has the flip on, so it reproduces the baseline; whether the default should change is open.
 - Median background frame (`background_frame: true`, 12 input channels): run `tennis_v2_bg` (configs/tennis_v2_bg.yaml: the no-flip recipe plus the background frame, done 2026-11-17) scored level with `tennis_v2_noflip`: validation F1 at its best epoch (15) is 0.949 at 4 px, 512x288 and 0.909 at 4 px of the source, a difference one run cannot tell from noise (results doc §5). It stays off by default, and later experiments are still compared with `tennis_v2_noflip`.
 - Still open (review doc §5): batch size and learning rate, mixup, jitter strength, `torch.compile` speed. Mixup and jitter strength are now config switches (`mixup_alpha`, `color_jitter`; the defaults train as before), with runs `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml) and `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml, WASB's 0.1 at p 0.5) planned, not started (results doc §6).
+- Badminton data loading is implemented (`data.format: badminton`, configs/badminton_v2.yaml: 10 epochs, flip off, val Professional/match22, Professional/match23 and Amateur/match3, test the dataset's own Test part). As of 2026-11-17 the real frames have not been extracted and nothing has been trained on badminton.
 - V5 is deferred.
 
 ## Gotchas
@@ -63,8 +65,9 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - Windows are never padded: up to two frames at the end of each clip are neither trained on with full context nor scored (9 frames in val, 35 in test). `infer` pads its last window so every frame gets a prediction
 - Map label coordinates between source and model resolution only with `source_to_model` / `model_to_source` (data/heatmap.py): `(x + 0.5) * scale - 0.5`, through pixel centres as `cv2.resize` does. This deliberately departs from TrackNetV3, whose plain `x * scale` puts the target 0.3 px off the ball at 1280→512
 - Tennis visibility 3 rows carry coordinates but count as ball-absent (`visible_flags=(1, 2)`)
+- Badminton (`data.format: badminton`, configs/badminton_v2.yaml) needs `main.py extract-frames --root datasets/badminton` once before check-data, train or evaluate: the dataset ships mp4 videos. Extraction covers every part, Test included. Frames are required only for the splits built (`build_dataset` calls `require_frames`): `train` and `evaluate --split val` need only Professional and Amateur, `check-data` builds all three splits and needs Test too. Never run two `extract-frames` on the same root at once: the second removes the first's `frames/<rally>.partial` as a leftover (there is no lock). Groups are `<part>/<match>` (match names repeat across parts); overlay file names write them with `-`. Video frame i is label row `Frame == i`; surplus trailing video frames are dropped and counted, and fewer video frames than label rows is an error. The badminton `Test` part is held out exactly like tennis game8–10
 - Tennis labels are about 1.5 source px right of and 1.4 px below the ball in game1–7 (test games not measured). With `horizontal_flip: true` the horizontal part becomes orientation-dependent, and the baseline was 1.1 px off on the validation game because of it (results doc §4). A model trained without the flip reports the label convention, not the ball's visual centre
-- Analysis scripts in scripts/analysis/ (per-frame validation errors, prediction offset with mirrored input, label versus ball). Never point them at game8–10
+- Analysis scripts in scripts/analysis/ (per-frame validation errors, prediction offset with mirrored input, label versus ball). Never point them at game8–10 or badminton `Test`. prediction_offset.py finds clips through `discover_clips`, so it takes either format; val_errors.py and label_vs_ball.py read the tennis `Label.csv` columns and are tennis-only (val_errors.py refuses a config whose `data.format` is not tennis; label_vs_ball.py takes a dataset root and game names, not a config)
 - Models return sigmoid heatmaps by default; training calls `model(frames, return_logits=True)` and the loss runs in float32 on the logits. Backbone, R-STR head and TrackNet all take `return_logits`
 - Two evaluation protocols: `model_res_4px` (4 px at 512x288) and `source_res_4px` (4 px in source pixels = 1.6 px at 512x288 for 1280-wide video). `evaluate` reports both; per-epoch validation and best.pt selection use `f1` at 4 px, 512x288 only
 - Checkpoints load with `weights_only=True`, so the config must hold only plain YAML types (dict, list, str, int, float, bool, None); the Trainer rejects anything else
