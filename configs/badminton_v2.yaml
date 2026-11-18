@@ -1,0 +1,32 @@
+# TrackNet V2 on the CoachAI badminton shuttlecock dataset (docs/data-sources.md).
+# Run `main.py extract-frames --root datasets/badminton` once first: training
+# reads frame images, and the dataset ships videos.
+# Every key not set here comes from default.yaml.
+
+base: default.yaml
+
+experiment_name: badminton_v2
+
+# Run length. Train is about 69,455 label rows: about 34,700 steps per epoch at
+# batch 2, against tennis's 6,083, so default.yaml's 30 epochs would take about
+# 33 hours. That is about 67 minutes per epoch, extrapolated from the tennis runs
+# (not measured on badminton). 10 epochs is about 347,000 steps, against a
+# 30-epoch tennis run's 182,490; the LR drops at about the same share of the run
+# (after 3/5 and 4/5 of it, against 2/3 and 5/6).
+epochs: 10
+lr_schedule:
+  milestones: [6, 8]
+
+# On tennis the flip turned a constant label offset into an orientation-dependent
+# one (docs/2026-11-16-training-results.md §4). Whether the badminton labels have
+# such an offset has not been measured, so the flip stays off until it is.
+horizontal_flip: false
+
+# Groups are <part>/<match>: match names repeat across parts.
+data:
+  format: badminton
+  root: datasets/badminton
+  # 9,103 of the 78,558 Professional + Amateur label rows, 18 rallies
+  val_groups: [Professional/match22, Professional/match23, Amateur/match3]
+  # The dataset's own test set; held out like tennis game8-10
+  test_groups: [Test/match1, Test/match2, Test/match3]

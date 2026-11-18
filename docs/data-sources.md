@@ -9,7 +9,7 @@ Label format we consume: one row per frame with frame index, visibility flag, an
 | Sport | Dataset | Labelled frames | Camera | Licence | Use |
 |---|---|---|---|---|---|
 | Tennis | TrackNet tennis | ~20K | Broadcast | None stated | First training run |
-| Badminton | CoachAI shuttlecock (TrackNetV2) | 78,200 | Broadcast + 3 amateur matches | None stated | Core |
+| Badminton | CoachAI shuttlecock (TrackNetV2) | 78,200 (published); 91,214 label rows measured, of which 12,656 in `Test` | Broadcast + 3 amateur matches | None stated | Core |
 | Tennis / badminton / table tennis | RacketVision | 64,042 (of 435,179 frames) | Broadcast | MIT; footage rights unresolved | Pre-training, needs loss mask |
 | Table tennis | BlurBall | ~64K | Fixed static cameras | Code MIT; data licence unstated | Pre-training candidate |
 | Badminton | ETH one-shot shuttle detection | 20,510 | Stationary, non-broadcast | Unstated (code AGPL-3.0) | Candidate, check frame continuity |
@@ -53,7 +53,7 @@ ls datasets/tennis/game1/Clip1/0000.jpg   # should list the file
 
 The `Readme.docx` left at `datasets/tennis/` is harmless: clip discovery looks only at directories. Then run `check-data` (see the README) to confirm the counts match the [pre-training review](2026-11-15-pre-training-review.md) §4.4. The Kaggle copy was not downloaded; its layout is unchecked.
 
-## Badminton — CoachAI shuttlecock dataset (78,200 frames)
+## Badminton — CoachAI shuttlecock dataset (78,200 frames published; 91,214 label rows measured)
 
 | Source | Link |
 |--------|------|
@@ -62,6 +62,17 @@ The `Readme.docx` left at `datasets/tennis/` is harmless: clip discovery looks o
 | CoachAI GitHub | https://github.com/wywyWang/CoachAI-Projects (does not host the tracking data) |
 
 **Format:** 1280x720, 30 fps, 26 videos. `TrackNetV2.zip` is 1.73 GB and contains `Professional/match1-23`, `Amateur/match1-3`, `Test/match1-3`: 201 rally mp4 files with 201 CSVs (`Frame, Visibility, X, Y`).
+
+**Measured on the downloaded copy (2026-11-17):**
+
+- Layout: `<part>/<match>/video/<rally>.mp4` and `<part>/<match>/csv/<rally>_ball.csv`, with rally names such as `1_02_03`. `<part>` is `Professional` (match1–match23, 146 rallies), `Amateur` (match1–match3, 26 rallies) or `Test` (match1–match3, 29 rallies). Match names repeat across parts, so a match is identified by `<part>/<match>`.
+- Every video is 1280x720. Frame rates vary: 25, 29, 29.97 and 30 fps. Nothing in our code depends on them.
+- Every CSV has the header `Frame,Visibility,X,Y`, which `data/labels.py` reads. `Frame` runs 0, 1, 2, … with no gaps in all 201 files.
+- In `Professional` and `Amateur`, visibility is only 0 or 1, coordinates are integers, visibility-0 rows have X = Y = 0, and no visible coordinate is outside the frame.
+- Label rows: `Professional` 69,092, `Amateur` 9,466, `Test` 12,656 (91,214 in all; 78,558 outside `Test`, against the published 78,200).
+- In 25 of the 201 rallies the video container reports more frames than the CSV has rows (2 to 51 more; never fewer). That is container metadata, not a decoded count. `extract-frames` treats the surplus as trailing unlabelled frames: video frame i is label row `Frame == i`, and frames past the last label row are dropped and counted.
+
+`Test` is the dataset's own test set and is held out exactly like tennis game8–10: `configs/badminton_v2.yaml` makes it the test split (validation is `Professional/match22`, `Professional/match23` and `Amateur/match3`: 9,103 label rows in 18 rallies).
 
 **Licence:** none stated.
 
@@ -73,6 +84,24 @@ The `Readme.docx` left at `datasets/tennis/` is harmless: clip discovery looks o
 curl -L -c cj -b cj -o TrackNetV2.zip \
   "https://nycu1-my.sharepoint.com/:u:/g/personal/tik_m365_nycu_edu_tw/EWisYhAiai9Ju7L-tQp0ykEBZJd9VQkKqsFrjcqqYIDP-g?download=1"
 ```
+
+### Set up for training
+
+`configs/badminton_v2.yaml` reads `datasets/badminton/<part>/<match>/`, so after unzipping `datasets/badminton/Professional` must exist. The zip has one top-level folder, `TrackNetV2/`, holding `Professional/`, `Amateur/` and `Test/`, so extract it into `datasets/` and rename that folder. From the repo root, needing only Python (no `unzip`):
+
+```bash
+python3 -m zipfile -e TrackNetV2.zip datasets/
+mv datasets/TrackNetV2 datasets/badminton
+ls -d datasets/badminton/Professional   # should list the directory
+```
+
+The dataset ships videos, and training reads frame images, so decode them once:
+
+```bash
+uv run python main.py extract-frames --root datasets/badminton
+```
+
+It writes `<part>/<match>/frames/<rally>/NNNN.jpg` for every label row of every part, `Test` included (source resolution, JPEG quality 95 unless `--jpeg-quality` says otherwise), drops surplus trailing video frames, warns about any rally whose container frame count differs from the frames decoded, and logs a summary. It is safe to interrupt and re-run: rallies already extracted are skipped. Do not run two extractions on the same root at once: the second removes the first's temporary directory. `train` and `evaluate --split val` need only the `Professional` and `Amateur` frames; `check-data`, which builds all three splits, also needs `Test`. Then run `check-data --config configs/badminton_v2.yaml` (see the README).
 
 ## Multi-sport — RacketVision (released 2026-04-11)
 

@@ -1,4 +1,6 @@
 import csv
+import logging
+import shutil
 from pathlib import Path
 from typing import cast
 
@@ -13,7 +15,19 @@ from data.background import background_indices, median_frame
 from data.dataset import TrackNetDataset
 from data.heatmap import generate_heatmap, model_to_source, source_to_model
 from data.labels import load_labels, visibility_counts
-from data.sources import build_dataset, discover_tennis_clips, split_clips
+from data.extract import (
+    TEMP_SUFFIX,
+    ExtractionSummary,
+    extract_badminton_frames,
+    frame_file_name,
+)
+from data.sources import (
+    build_dataset,
+    discover_badminton_clips,
+    discover_clips,
+    discover_tennis_clips,
+    split_clips,
+)
 from data.transforms import (
     Compose,
     FrameColorJitter,
@@ -22,6 +36,13 @@ from data.transforms import (
     mixup_batch,
 )
 from inference.video_preprocess import preprocess_frame
+from tests.conftest import (
+    BADMINTON_RALLIES,
+    BADMINTON_SIZE,
+    badminton_grey,
+    write_badminton_labels,
+    write_badminton_video,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +898,327 @@ class TestSources:
         with pytest.raises(ValueError, match="<game>/<clip>/Label.csv") as err:
             discover_tennis_clips(too_deep)
         assert str(too_deep) in str(err.value)
+
+
+# ---------------------------------------------------------------------------
+# Badminton: frame extraction from rally videos, clip discovery
+# ---------------------------------------------------------------------------
+
+LABELLED_FILES = {f"{i:04d}.jpg" for i in range(6)}  # every fixture rally's labels
+SURPLUS_RALLY = "Professional/match10/1_01_01"  # 9 video frames, 6 label rows
+
+
+def _frames_dir(root: Path, rally: str) -> Path:
+    match, name = rally.rsplit("/", 1)
+    return root / match / "frames" / name
+
+
+def _temp_dir(root: Path, rally: str) -> Path:
+    frames_dir = _frames_dir(root, rally)
+    return frames_dir.with_name(frames_dir.name + TEMP_SUFFIX)
+
+
+class TestBadmintonExtraction:
+    def test_writes_each_labelled_frame_named_by_its_frame_id(self, badminton_root):
+        summary = extract_badminton_frames(badminton_root)
+        assert summary == ExtractionSummary(
+            extracted=5,
+            skipped=0,
+            frames_written=30,
+            surplus_dropped=3,
+            count_mismatches=0,
+        )
+        width, height = BADMINTON_SIZE
+        for rally in BADMINTON_RALLIES:
+            frames_dir = _frames_dir(badminton_root, rally)
+            assert {p.name for p in frames_dir.iterdir()} == LABELLED_FILES, rally
+            for i in range(6):
+                image = cv2.imread(str(frames_dir / f"{i:04d}.jpg"))
+                assert image is not None
+                assert image.shape == (height, width, 3)  # source resolution
+                # mp4v and JPEG are lossy: frame i is grey 25 * i, give or take.
+                assert abs(image.mean() - badminton_grey(i)) < 6, (rally, i)
+            assert not _temp_dir(badminton_root, rally).exists()
+
+    def test_frame_file_names_have_at_least_four_digits(self):
+        assert frame_file_name(7) == "0007.jpg"
+        assert frame_file_name(12345) == "12345.jpg"
+
+    def test_surplus_video_frames_are_dropped_and_logged(self, badminton_root, caplog):
+        with caplog.at_level(logging.INFO, logger="data.extract"):
+            extract_badminton_frames(badminton_root)
+        frames_dir = _frames_dir(badminton_root, SURPLUS_RALLY)
+        assert {p.name for p in frames_dir.iterdir()} == LABELLED_FILES
+        surplus_lines = [
+            r.getMessage() for r in caplog.records if "past the last label" in r.message
+        ]
+        assert surplus_lines == [
+            f"{SURPLUS_RALLY}: dropped 3 video frames past the last label row"
+        ]
+        assert (
+            "extract-frames: 5 rallies extracted, 0 skipped (already extracted), "
+            "30 frames written, 3 surplus video frames dropped, 0 rallies whose "
+            "container frame count differs from the decoded count"
+        ) in caplog.text
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_container_frame_count_that_differs_is_warned_and_counted(
+        self, badminton_root, monkeypatch, caplog
+    ):
+        real_capture = cv2.VideoCapture
+
+        class MisreportingCapture:
+            """The Test rally's container claims 5 frames more than it holds."""
+
+            def __init__(self, path):
+                self.capture = real_capture(path)
+                self.extra = 5 if "Test" in path else 0
+
+            def get(self, prop):
+                value = self.capture.get(prop)
+                return value + self.extra if prop == cv2.CAP_PROP_FRAME_COUNT else value
+
+            def __getattr__(self, name):
+                return getattr(self.capture, name)
+
+        monkeypatch.setattr("data.extract.cv2.VideoCapture", MisreportingCapture)
+        with caplog.at_level(logging.INFO, logger="data.extract"):
+            summary = extract_badminton_frames(badminton_root)
+        assert summary.count_mismatches == 1
+        assert summary.frames_written == 30  # what is written does not change
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings == [
+            "Test/match1/1_01_01: the video container reports 11 frames, "
+            "but 6 were decoded"
+        ]
+        assert "1 rallies whose container frame count differs" in caplog.text
+        frames_dir = _frames_dir(badminton_root, "Test/match1/1_01_01")
+        assert {p.name for p in frames_dir.iterdir()} == LABELLED_FILES
+
+    def test_extraction_stops_at_the_first_bad_rally(self, badminton_root):
+        # In discovery order: Amateur/match2/1_01_01, Professional/match2/1_01_02,
+        # Professional/match2/1_01_10 (made bad), Professional/match10, Test.
+        write_badminton_video(
+            badminton_root / "Professional/match2/video/1_01_10.mp4", num_frames=2
+        )
+        with pytest.raises(ValueError, match="1_01_10"):
+            extract_badminton_frames(badminton_root)
+        for rally in ("Amateur/match2/1_01_01", "Professional/match2/1_01_02"):
+            frames_dir = _frames_dir(badminton_root, rally)
+            assert {p.name for p in frames_dir.iterdir()} == LABELLED_FILES, rally
+        for rally in (
+            "Professional/match2/1_01_10",
+            "Professional/match10/1_01_01",
+            "Test/match1/1_01_01",
+        ):
+            assert not _frames_dir(badminton_root, rally).exists(), rally
+            assert not _temp_dir(badminton_root, rally).exists(), rally
+
+    def test_files_in_csv_not_ending_in_ball_csv_are_ignored(self, badminton_root):
+        csv_dir = badminton_root / "Amateur/match2/csv"
+        (csv_dir / "notes.csv").write_text("not,a,label,file\n")
+        (csv_dir / "1_01_01_ball.csv.bak").write_text("Frame,Visibility,X,Y\n")
+        summary = extract_badminton_frames(badminton_root)
+        assert summary.extracted == 5
+        assert sorted(
+            p.name for p in (badminton_root / "Amateur/match2/frames").iterdir()
+        ) == ["1_01_01"]
+        clips = discover_badminton_clips(badminton_root)
+        assert len(clips) == 5
+        assert all(c.label_path.name.endswith("_ball.csv") for c in clips)
+
+    def test_video_with_fewer_frames_than_labels_raises(self, badminton_root):
+        rally = "Professional/match2/1_01_02"
+        write_badminton_video(
+            badminton_root / "Professional/match2/video/1_01_02.mp4", num_frames=4
+        )
+        with pytest.raises(ValueError) as err:
+            extract_badminton_frames(badminton_root)
+        message = str(err.value)
+        assert rally in message
+        assert "4 frames" in message and "6 label rows" in message
+        assert not _frames_dir(badminton_root, rally).exists()
+        assert not _temp_dir(badminton_root, rally).exists()  # cleaned up
+
+    def test_non_consecutive_frame_ids_raise(self, badminton_root):
+        label_path = badminton_root / "Amateur/match2/csv/1_01_01_ball.csv"
+        write_badminton_labels(label_path, [(0, 1, 10, 10), (1, 0, 0, 0), (3, 0, 0, 0)])
+        with pytest.raises(ValueError, match="not exactly 0..2") as err:
+            extract_badminton_frames(badminton_root)
+        assert str(label_path) in str(err.value)
+        assert not _frames_dir(badminton_root, "Amateur/match2/1_01_01").exists()
+
+    def test_frame_ids_not_starting_at_zero_raise(self, badminton_root):
+        label_path = badminton_root / "Amateur/match2/csv/1_01_01_ball.csv"
+        write_badminton_labels(label_path, [(1, 1, 10, 10), (2, 0, 0, 0)])
+        with pytest.raises(ValueError, match="not exactly 0..1"):
+            extract_badminton_frames(badminton_root)
+
+    def test_video_that_cannot_be_opened_raises(self, badminton_root):
+        video = badminton_root / "Amateur/match2/video/1_01_01.mp4"
+        video.unlink()
+        with pytest.raises(OSError, match="cannot open video") as err:
+            extract_badminton_frames(badminton_root)
+        assert str(video) in str(err.value)
+
+    def test_failed_image_write_raises(self, badminton_root, monkeypatch):
+        monkeypatch.setattr("data.extract.cv2.imwrite", lambda *args: False)
+        with pytest.raises(OSError, match="failed to write"):
+            extract_badminton_frames(badminton_root)
+        assert not list(badminton_root.glob("*/*/frames/*"))  # nothing left behind
+
+    @pytest.mark.parametrize("quality", [-1, 101])
+    def test_jpeg_quality_outside_0_to_100_raises(self, badminton_root, quality):
+        with pytest.raises(ValueError, match="jpeg_quality"):
+            extract_badminton_frames(badminton_root, jpeg_quality=quality)
+
+    def test_rerun_skips_extracted_rallies(self, badminton_root):
+        extract_badminton_frames(badminton_root)
+        frame = _frames_dir(badminton_root, SURPLUS_RALLY) / "0000.jpg"
+        written = frame.stat().st_mtime_ns
+        summary = extract_badminton_frames(badminton_root)
+        assert summary == ExtractionSummary(
+            extracted=0,
+            skipped=5,
+            frames_written=0,
+            surplus_dropped=0,
+            count_mismatches=0,
+        )
+        assert frame.stat().st_mtime_ns == written  # not rewritten
+
+    def test_leftover_temporary_directory_is_redone(self, badminton_root):
+        extract_badminton_frames(badminton_root)
+        rally = "Amateur/match2/1_01_01"
+        frames_dir = _frames_dir(badminton_root, rally)
+        shutil.rmtree(frames_dir)
+        temp = _temp_dir(badminton_root, rally)
+        temp.mkdir()
+        (temp / "0000.jpg").write_bytes(b"half-written")  # an interrupted run's
+        (temp / "0099.jpg").write_bytes(b"never written by this rally")
+        summary = extract_badminton_frames(badminton_root)
+        assert (summary.extracted, summary.skipped) == (1, 4)
+        assert not temp.exists()
+        # Exactly the labelled frames: the leftover was not reused.
+        assert {p.name for p in frames_dir.iterdir()} == LABELLED_FILES
+        assert cv2.imread(str(frames_dir / "0000.jpg")) is not None
+
+    @pytest.mark.parametrize("contents", [{"0000.jpg"}, LABELLED_FILES | {"x.txt"}])
+    def test_existing_frames_directory_with_other_contents_is_refused(
+        self, badminton_root, contents
+    ):
+        frames_dir = _frames_dir(badminton_root, "Amateur/match2/1_01_01")
+        frames_dir.mkdir(parents=True)
+        for name in contents:
+            (frames_dir / name).write_bytes(b"x")
+        with pytest.raises(FileExistsError, match="remove it") as err:
+            extract_badminton_frames(badminton_root)
+        assert str(frames_dir) in str(err.value)
+        assert {p.name for p in frames_dir.iterdir()} == contents  # not deleted
+
+    def test_existing_frames_directory_with_an_empty_file_is_refused(
+        self, badminton_root
+    ):
+        extract_badminton_frames(badminton_root)
+        frames_dir = _frames_dir(badminton_root, "Amateur/match2/1_01_01")
+        (frames_dir / "0003.jpg").write_bytes(b"")
+        with pytest.raises(FileExistsError, match="remove it") as err:
+            extract_badminton_frames(badminton_root)
+        assert str(err.value) == (
+            f"{frames_dir} exists but its file 0003.jpg is empty: remove it and "
+            "re-run extract-frames"
+        )
+        assert (frames_dir / "0003.jpg").stat().st_size == 0  # left as it is
+
+
+class TestBadmintonSources:
+    def test_discovery_order_groups_and_paths(self, badminton_root):
+        extract_badminton_frames(badminton_root)
+        clips = discover_badminton_clips(badminton_root)
+        assert [(c.group, c.frames_dir.name) for c in clips] == [
+            ("Amateur/match2", "1_01_01"),
+            ("Professional/match2", "1_01_02"),
+            ("Professional/match2", "1_01_10"),
+            ("Professional/match10", "1_01_01"),
+            ("Test/match1", "1_01_01"),
+        ]
+        first = clips[0]
+        assert first.frames_dir == badminton_root / "Amateur/match2/frames/1_01_01"
+        assert (
+            first.label_path == badminton_root / "Amateur/match2/csv/1_01_01_ball.csv"
+        )
+
+    def test_same_match_name_in_two_parts_are_separate_groups(self, badminton_root):
+        extract_badminton_frames(badminton_root)
+        splits = split_clips(
+            discover_badminton_clips(badminton_root),
+            val_groups=["Amateur/match2"],
+            test_groups=["Test/match1"],
+        )
+        assert [c.group for c in splits["val"]] == ["Amateur/match2"]
+        assert {c.group for c in splits["train"]} == {
+            "Professional/match2",
+            "Professional/match10",
+        }
+
+    def test_clips_build_a_dataset(self, badminton_root):
+        extract_badminton_frames(badminton_root)
+        clips = discover_badminton_clips(badminton_root)
+        assert len(build_dataset(clips, stride=3, radius=2.5)) == 10  # 5 clips x 2
+
+    def test_discovery_does_not_need_frames(self, badminton_root):
+        clips = discover_badminton_clips(badminton_root)  # nothing extracted yet
+        assert len(clips) == 5
+        assert all(c.extract_root == badminton_root for c in clips)
+
+    def test_building_a_rally_without_frames_says_to_extract_first(
+        self, badminton_root
+    ):
+        extract_badminton_frames(badminton_root)
+        frames_dir = _frames_dir(badminton_root, "Test/match1/1_01_01")
+        shutil.rmtree(frames_dir)
+        clips = discover_badminton_clips(badminton_root)
+        with pytest.raises(FileNotFoundError) as err:
+            build_dataset(clips, stride=3, radius=2.5)
+        assert str(err.value) == (
+            f"Test/match1/1_01_01: no frames directory {frames_dir} for "
+            f"{badminton_root / 'Test/match1/csv/1_01_01_ball.csv'}: run "
+            f"`main.py extract-frames --root {badminton_root}` first"
+        )
+        # The clips that have frames still build.
+        assert len(build_dataset(clips[:-1], stride=3, radius=2.5)) == 8
+
+    def test_tennis_clips_have_no_extract_root(self, tennis_root):
+        assert all(c.extract_root is None for c in discover_tennis_clips(tennis_root))
+
+    def test_missing_root_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="dataset root not found"):
+            discover_badminton_clips(tmp_path / "does-not-exist")
+
+    def test_root_without_rallies_raises(self, badminton_root):
+        too_deep = badminton_root / "Professional"  # holds matches, not parts
+        with pytest.raises(
+            ValueError, match="<part>/<match>/csv/<rally>_ball.csv"
+        ) as err:
+            discover_badminton_clips(too_deep)
+        assert str(too_deep) in str(err.value)
+
+
+class TestDiscoverClips:
+    def test_tennis(self, tennis_root):
+        data = {"format": "tennis", "root": str(tennis_root)}
+        assert discover_clips(data) == discover_tennis_clips(tennis_root)
+
+    def test_badminton(self, badminton_root):
+        data = {"format": "badminton", "root": str(badminton_root)}
+        assert discover_clips(data) == discover_badminton_clips(badminton_root)
+
+    def test_unknown_format_names_the_supported_ones(self, tmp_path):
+        with pytest.raises(ValueError) as err:
+            discover_clips({"format": "pickleball", "root": str(tmp_path)})
+        assert str(err.value) == (
+            "unknown data.format 'pickleball': supported formats are "
+            "'tennis', 'badminton'"
+        )
 
 
 # ---------------------------------------------------------------------------

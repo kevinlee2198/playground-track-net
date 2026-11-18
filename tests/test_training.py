@@ -242,6 +242,28 @@ def test_experiment_config_is_its_base_with_two_overrides(experiment, base, over
     assert config["horizontal_flip"] is False
 
 
+def test_badminton_config_is_the_default_shortened_without_flip_on_badminton_data():
+    configs = pathlib.Path(__file__).parent.parent / "configs"
+    config = load_config(configs / "badminton_v2.yaml")
+    default = load_config(configs / "default.yaml")
+    assert config == default | {
+        "experiment_name": "badminton_v2",
+        "epochs": 10,
+        "lr_schedule": default["lr_schedule"] | {"milestones": [6, 8]},
+        "horizontal_flip": False,
+        "data": {
+            "format": "badminton",
+            "root": "datasets/badminton",
+            "val_groups": [
+                "Professional/match22",
+                "Professional/match23",
+                "Amateur/match3",
+            ],
+            "test_groups": ["Test/match1", "Test/match2", "Test/match3"],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Detection metrics
 # ---------------------------------------------------------------------------

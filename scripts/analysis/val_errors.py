@@ -248,6 +248,11 @@ def report(
 def main() -> None:
     config_path, weights, out_csv = sys.argv[1:4]
     config = load_config(config_path)
+    if config["data"]["format"] != "tennis":
+        raise ValueError(
+            f"{config_path} has data.format {config['data']['format']!r}: this "
+            "script reads the tennis Label.csv columns and supports only 'tennis'"
+        )
     rows, sweep = score_frames(config, weights)
     with open(out_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDS)

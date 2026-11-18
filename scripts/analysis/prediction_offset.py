@@ -19,7 +19,13 @@ from collections import defaultdict
 import numpy as np
 import torch
 
-from data import TrackNetDataset, discover_tennis_clips, source_to_model, split_clips
+from data import (
+    TrackNetDataset,
+    discover_clips,
+    require_frames,
+    source_to_model,
+    split_clips,
+)
 from models import load_model
 from training.evaluate import heatmap_to_position
 from training.run import checkpoint_background, load_config
@@ -40,15 +46,15 @@ def main() -> None:
     config = load_config(config_path)
     width, height = config["input_size"]
     data = config["data"]
-    clips = split_clips(
-        discover_tennis_clips(data["root"]), data["val_groups"], data["test_groups"]
-    )[split]
+    splits = split_clips(discover_clips(data), data["val_groups"], data["test_groups"])
+    clips = splits[split]
+    require_frames(clips)  # as build_dataset would: the clips are built directly
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, stored = load_model(weights, device)
     model.eval()
     background = checkpoint_background(config, stored, weights)
 
-    # (game, mirrored) -> [(dx, dy), ...]
+    # (group, mirrored) -> [(dx, dy), ...]
     offsets: dict[tuple[str, bool], list[tuple[float, float]]] = defaultdict(list)
     for clip_info in clips:
         clip = TrackNetDataset(
@@ -84,11 +90,13 @@ def main() -> None:
 
     for mirrored in (False, True):
         pooled = [
-            v for (_, m), group in offsets.items() if m == mirrored for v in group
+            v for (_, m), values in offsets.items() if m == mirrored for v in values
         ]
         print(f"{split} {format_offsets(pooled, mirrored)}")
-    for (game, mirrored), group in sorted(offsets.items()):
-        print(f"  {game:7s} {format_offsets(group, mirrored)}")
+    # At least 7 wide, the width tennis's game names always had.
+    pad = max([7, *(len(group) for group, _ in offsets)])
+    for (group, mirrored), values in sorted(offsets.items()):
+        print(f"  {group:{pad}s} {format_offsets(values, mirrored)}")
 
 
 if __name__ == "__main__":
