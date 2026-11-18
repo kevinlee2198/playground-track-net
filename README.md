@@ -71,18 +71,20 @@ playground-track-net/
   utils/
     visualization.py    # Ball overlay drawing for annotated video output
   configs/
-    default.yaml        # Training config with every key (optimizer, schedule, AMP, paths)
-    tennis_v2_noflip.yaml # default.yaml without the horizontal flip
+    default.yaml        # Training config with every key (optimizer, schedule, AMP, paths); flip off
+    tennis_v2_baseline.yaml # default.yaml with the horizontal flip on: the first run
+    tennis_v2_noflip.yaml # default.yaml under the no-flip run's name (the flip off, set explicitly)
     tennis_v2_bg.yaml   # tennis_v2_noflip.yaml plus the median background frame
     tennis_v2_mixup.yaml  # tennis_v2_noflip.yaml plus mixup (mixup_alpha: 0.5)
     tennis_v2_jitter.yaml # tennis_v2_noflip.yaml with WASB's colour jitter (0.1 at p 0.5)
     badminton_v2.yaml   # default.yaml on the CoachAI badminton dataset, without the flip, 10 epochs
+    badminton_v2_flip.yaml # badminton_v2.yaml with the flip on, first 5 epochs only
   tests/
     conftest.py         # Shared synthetic-data fixtures
     test_models.py      # Backbone, loss, V2 wrapper, V5 wiring, model loading (88 tests)
     test_mdd.py         # MDD module unit tests (21 tests)
     test_data.py        # Labels, clip discovery, badminton frame extraction, dataset, background frame, heatmap, transforms (136 tests)
-    test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (67 tests)
+    test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (71 tests)
     test_inference.py   # Postprocess, tracker, video preprocess (30 tests)
     test_pipeline.py    # End to end: train, evaluate, check-data, infer, badminton extract-frames (54 tests)
   docs/
@@ -106,12 +108,12 @@ playground-track-net/
 | Badminton data (`extract-frames`, clip discovery, `configs/badminton_v2.yaml`) | Done; run on the real dataset (`badminton_v2`, one 10-epoch run) | covered in `test_data.py`, `test_training.py`, `test_pipeline.py` |
 | Median background frame (`background_frame: true`) | Done; one run (`tennis_v2_bg`), level with the no-flip run | covered in `test_data.py`, `test_models.py`, `test_inference.py`, `test_pipeline.py` |
 | Mixup (`mixup_alpha`) and colour-jitter settings (`color_jitter`) | Done; each trained once (`tennis_v2_mixup`, `tennis_v2_jitter`) | covered in `test_data.py`, `test_training.py`, `test_pipeline.py` |
-| Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; five full 30-epoch runs | 67 in `test_training.py` |
+| Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; five full 30-epoch runs | 71 in `test_training.py` |
 | Inference (postprocess, Kalman tracker, video I/O) | Done; run on one real clip | 30 in `test_inference.py` |
 | CLI (`train` / `evaluate` / `check-data` / `extract-frames` / `infer` subcommands) | Done | 54 in `test_pipeline.py` |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 396 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 400 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
@@ -119,7 +121,7 @@ Details, file references and the measured preflight numbers are in [docs/2026-11
 
 **Shown so far:** five 30-epoch runs, scored on the validation game only: the baseline, F1 0.949 at 4 px, 512x288 and 0.771 at source resolution; the same recipe without the flip, 0.947 and 0.903; and that no-flip recipe with a background frame (0.949 and 0.909), with mixup (0.945 and 0.898) and with a weaker colour jitter (0.941 and 0.896). Nothing has been evaluated on the test split.
 
-**Found by the baseline:** predictions sit a constant 1.1 px left of the labels on the validation game (+0.1 px on the training games). The dataset's labels are about 1.5 source pixels right of the ball in game1–7, and mirroring half the training windows makes the sign of that offset depend on the orientation. Training without the flip (`horizontal_flip: false`, configs/tennis_v2_noflip.yaml) removes the offset: that run's mean horizontal error is −0.01 px, and its validation F1 is 0.903 at 4 px of the source against the baseline's 0.771 (0.947 against 0.949 at 4 px, 512x288).
+**Found by the baseline:** predictions sit a constant 1.1 px left of the labels on the validation game (+0.1 px on the training games). The dataset's labels are about 1.5 source pixels right of the ball in game1–7, and mirroring half the training windows makes the sign of that offset depend on the orientation. Training without the flip (`horizontal_flip: false`, configs/tennis_v2_noflip.yaml) removes the offset: that run's mean horizontal error is −0.01 px, and its validation F1 is 0.903 at 4 px of the source against the baseline's 0.771 (0.947 against 0.949 at 4 px, 512x288). Since 2026-11-18 `configs/default.yaml` has the flip off; `configs/tennis_v2_baseline.yaml` reproduces the baseline.
 
 **Open:**
 
@@ -172,19 +174,19 @@ uv run python main.py train --config configs/default.yaml
 # Continue a run from its last checkpoint, with the config that started it.
 # With --max-steps, N must exceed the checkpoint's step.
 uv run python main.py train --config configs/default.yaml \
-  --resume checkpoints/tennis_v2_baseline/latest.pt
+  --resume checkpoints/tennis_v2/latest.pt
 
 # Evaluate a checkpoint; prints JSON with both protocols. --split defaults to test,
 # so pass --split val until the model is final.
 uv run python main.py evaluate --config configs/default.yaml \
-  --weights checkpoints/tennis_v2_baseline/latest.pt --split val
+  --weights checkpoints/tennis_v2/latest.pt --split val
 ```
 
 - **Log lines** carry a timestamp; step lines add steps per second and, on a GPU, peak GPU memory; epoch lines add validation F1, precision and recall and separate train and validation seconds. The training loss is printed in scientific notation: on the baseline its epoch mean was 4.96e-5 at epoch 5 and 2.36e-5 at epoch 30, which four decimals showed as 0.0000.
 - **`train` will not overwrite a run.** If `checkpoints/<experiment_name>/latest.pt` exists, `train` stops before doing anything unless `--resume` names that same file: a fresh run, a resume from another run's checkpoint under this config, or a resume from this run's own `best.pt` would all replace it. Set a new `experiment_name` to start a new run, including one branched from an existing checkpoint. A `--resume` file that does not exist is reported as such.
 - **Resume is per epoch.** Training continues from the epoch after the checkpoint's. A checkpoint whose epoch was cut short by `--max-steps` logs a warning and the rest of that epoch is skipped. A config that differs from the one stored in the checkpoint (apart from `epochs` and `max_steps`) logs a warning listing the differences. A key added to the config after the checkpoint was saved is compared using the value the code used before the key existed, so resuming an old checkpoint does not warn about `horizontal_flip`, `background_frame`, `color_jitter` or `mixup_alpha` when nothing changed.
 - **The config must hold only plain YAML types** (mappings, lists, strings, numbers, booleans, null). Checkpoints store it and are loaded with `weights_only=True`; the Trainer rejects anything else at startup.
-- **Experiment configs inherit.** A config file must have every key, or name a base config with `base: <path>` (relative to the file that names it) and set only what differs; bases can chain. Nested mappings such as `data:` merge key by key. `configs/tennis_v2_noflip.yaml` is `default.yaml` without the flip. `configs/tennis_v2_bg.yaml`, `configs/tennis_v2_mixup.yaml` and `configs/tennis_v2_jitter.yaml` are `tennis_v2_noflip.yaml` plus one change each: `background_frame: true`, `mixup_alpha: 0.5`, and `color_jitter` at WASB's 0.1 with `p: 0.5`.
+- **Experiment configs inherit.** A config file must have every key, or name a base config with `base: <path>` (relative to the file that names it) and set only what differs; bases can chain. Nested mappings such as `data:` merge key by key. `configs/tennis_v2_baseline.yaml` is `default.yaml` with the flip on, which reproduces the first run; `configs/tennis_v2_noflip.yaml` is `default.yaml` under its own name, with the flip off set explicitly. `configs/tennis_v2_bg.yaml`, `configs/tennis_v2_mixup.yaml` and `configs/tennis_v2_jitter.yaml` are `tennis_v2_noflip.yaml` plus one change each: `background_frame: true`, `mixup_alpha: 0.5`, and `color_jitter` at WASB's 0.1 with `p: 0.5`.
 - **`background_frame: true`** adds each clip's median background frame as a fourth input image (12 channels). Every clip decodes up to 50 of its frames when a dataset is built, which takes 28 s for the tennis train and val splits (65 clips).
 - **`color_jitter`** sets the colour jitter on training windows: `brightness`, `contrast`, `saturation`, and `p`, the share of windows jittered. One draw covers every image in a window, background included. The default, 0.3 with `p: 1.0`, draws exactly what the jitter drew before it was configurable.
 - **`mixup_alpha`** above 0 turns on TrackNetV3's sample mixup (they use 0.5): each training batch is blended with a random permutation of itself, frames and heatmaps alike, with one weight `max(lam, 1 - lam)` per sample and `lam` drawn from Beta(alpha, alpha). Validation is never mixed. With batch size 2 the permutation pairs each sample with itself half the time, so about half the batches are not mixed. The default, 0, draws nothing; a run with mixup on does not share the off run's sample order after the first epoch, because mixup draws from torch's global generator, which also seeds each epoch's shuffle. The training loss of a mixup run has a floor above zero from the soft targets, about 1.4e-5 by calculation (`tennis_v2_mixup` ended 1.6e-5 above `tennis_v2_noflip`), so compare runs on validation F1, not training loss.

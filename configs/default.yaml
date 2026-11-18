@@ -20,7 +20,7 @@ batch_size: 2
 epochs: 30
 seed: 42
 train_stride: 1         # validation and test always use stride 3
-horizontal_flip: true   # mirror half the training windows left to right
+horizontal_flip: false  # mirror half the training windows; off since it put the tennis baseline 1.1 px off (docs/2026-11-16-training-results.md §4)
 color_jitter:           # one draw per training window, applied to every frame in it
   brightness: 0.3
   contrast: 0.3
@@ -42,7 +42,7 @@ compile_model: false    # needs a C compiler; its speed-up is unmeasured on this
 
 # Checkpointing
 checkpoint_dir: checkpoints
-experiment_name: tennis_v2_baseline
+experiment_name: tennis_v2
 
 # TensorBoard
 log_dir: runs

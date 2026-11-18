@@ -168,7 +168,10 @@ def test_config_loads_from_yaml():
     assert config["heatmap_radius"] == 2.5
     assert config["train_stride"] == 1
     assert config["log_every"] == 100
-    assert config["experiment_name"] == "tennis_v2_baseline"
+    assert config["horizontal_flip"] is False
+    # Not the baseline's name: resuming the baseline must go through its own
+    # config (tennis_v2_baseline.yaml), which has the flip on.
+    assert config["experiment_name"] == "tennis_v2"
     assert config["data"] == {
         "format": "tennis",
         "root": "datasets/tennis",
@@ -217,6 +220,8 @@ def test_load_config_rejects_a_base_cycle(tmp_path):
 @pytest.mark.parametrize(
     ("experiment", "base", "override"),
     [
+        ("tennis_v2_baseline", "default", {"horizontal_flip": True}),
+        # The same as the default apart from its name; it sets the flip itself.
         ("tennis_v2_noflip", "default", {"horizontal_flip": False}),
         ("tennis_v2_bg", "tennis_v2_noflip", {"background_frame": True}),
         ("tennis_v2_mixup", "tennis_v2_noflip", {"mixup_alpha": 0.5}),
@@ -232,14 +237,23 @@ def test_load_config_rejects_a_base_cycle(tmp_path):
                 }
             },
         ),
+        ("badminton_v2_flip", "badminton_v2", {"horizontal_flip": True, "epochs": 5}),
     ],
 )
-def test_experiment_config_is_its_base_with_two_overrides(experiment, base, override):
+def test_experiment_config_is_its_base_with_its_overrides(experiment, base, override):
     configs = pathlib.Path(__file__).parent.parent / "configs"
     config = load_config(configs / f"{experiment}.yaml")
     base_config = load_config(configs / f"{base}.yaml")
     assert config == base_config | override | {"experiment_name": experiment}
-    assert config["horizontal_flip"] is False
+
+
+@pytest.mark.parametrize("experiment", ["tennis_v2_noflip", "badminton_v2"])
+def test_no_flip_experiment_sets_the_flip_itself(experiment):
+    # The default has the flip off too, so the merged config cannot show
+    # whether the file still sets it. These runs must not follow the default.
+    configs = pathlib.Path(__file__).parent.parent / "configs"
+    raw = yaml.safe_load((configs / f"{experiment}.yaml").read_text())
+    assert raw["horizontal_flip"] is False
 
 
 def test_badminton_config_is_the_default_shortened_without_flip_on_badminton_data():

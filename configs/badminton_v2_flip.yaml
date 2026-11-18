@@ -10,7 +10,8 @@ horizontal_flip: true
 # The first five of badminton_v2's ten epochs. The learning-rate drops stay at
 # epochs 6 and 8, so every epoch here runs at the learning rate badminton_v2's
 # first five ran at, and the two per-epoch curves can be compared directly.
-# To finish the run as badminton_v2 was, resume with epochs: 10.
+# To finish the run as badminton_v2 was, resume with epochs: 10 under this
+# experiment_name.
 epochs: 5
 
 experiment_name: badminton_v2_flip
