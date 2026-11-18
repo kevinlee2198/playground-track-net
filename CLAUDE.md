@@ -50,13 +50,14 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - Model tests use small tensors (batch=1-2, 288x512) to keep them fast
 - Training unit tests use stub models; tests/test_pipeline.py runs the real TrackNet at 128x72
 
-## Status (2026-11-17)
+## Status (2026-11-18)
 - First full run done: `tennis_v2_baseline` (default recipe, 30 epochs, 5.7 h on this laptop). Validation (game7): F1 0.949 at 4 px, 512x288; 0.771 at 4 px of the source. Nothing has been evaluated on the test split.
 - Splits (configs/default.yaml): train game1–6, val game7, test game8–10. WASB trains on game1–7, so say so beside any comparison. Leave the test split alone until a model is final.
 - The baseline's predictions sit 1.1 px left of the labels on the validation game, caused by the flip augmentation (results doc §3–§4). Run `tennis_v2_noflip` (configs/tennis_v2_noflip.yaml, done) has no such offset (−0.01 px): validation F1 at its best epoch (15) is 0.947 at 4 px, 512x288 and 0.903 at 4 px of the source. Later experiments are compared with it. `configs/default.yaml` still has the flip on, so it reproduces the baseline; whether the default should change is open.
 - Median background frame (`background_frame: true`, 12 input channels): run `tennis_v2_bg` (configs/tennis_v2_bg.yaml: the no-flip recipe plus the background frame, done 2026-11-17) scored level with `tennis_v2_noflip`: validation F1 at its best epoch (15) is 0.949 at 4 px, 512x288 and 0.909 at 4 px of the source, a difference one run cannot tell from noise (results doc §5). It stays off by default, and later experiments are still compared with `tennis_v2_noflip`.
 - Mixup (`mixup_alpha: 0.5`): run `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml: the no-flip recipe plus mixup, done 2026-11-17) scored level with `tennis_v2_noflip` and slightly below it: validation F1 at its best epoch (15) is 0.945 at 4 px, 512x288 and 0.898 at 4 px of the source (results doc §6). It stays off by default (`mixup_alpha: 0`). Its heatmap peaks look lower than the no-flip model's (recall at threshold 0.9: 0.40 against 0.58 at the best epoch), as the soft targets would predict.
-- Still open (review doc §5): batch size and learning rate, jitter strength, `torch.compile` speed. Jitter strength is a config switch (`color_jitter`; the default trains as before), with run `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml, WASB's 0.1 at p 0.5) planned, not started (results doc §6).
+- Colour-jitter strength (`color_jitter`): run `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml: the no-flip recipe at WASB's 0.1 and p 0.5, done 2026-11-18) scored a little below `tennis_v2_noflip`: validation F1 at its best epoch (18) is 0.941 at 4 px, 512x288 and 0.896 at 4 px of the source, lower in most epochs but by an amount one run cannot tell from noise (results doc §6). The default stays at 0.3 with `p: 1.0`.
+- Still open (review doc §5): batch size and learning rate, `torch.compile` speed.
 - V5 is deferred.
 
 ## Gotchas
