@@ -4,7 +4,7 @@
 TrackNet V2 ball tracking for tennis, badminton, pickleball. PyTorch U-Net heatmap detector.
 Design spec: docs/superpowers/specs/2026-03-21-tracknet-ball-tracking-design.md
 Preflight numbers and open decisions: docs/2026-11-15-pre-training-review.md
-Training runs, results and error analysis: docs/2026-11-16-training-results.md
+Training runs, results and error analysis: docs/2026-11-16-training-results.md (tennis), docs/2026-11-18-badminton-results.md (badminton)
 Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
@@ -59,7 +59,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - Mixup (`mixup_alpha: 0.5`): run `tennis_v2_mixup` (configs/tennis_v2_mixup.yaml: the no-flip recipe plus mixup, done 2026-11-17) scored level with `tennis_v2_noflip` and slightly below it: validation F1 at its best epoch (15) is 0.945 at 4 px, 512x288 and 0.898 at 4 px of the source (results doc §6). It stays off by default (`mixup_alpha: 0`). Its heatmap peaks look lower than the no-flip model's (recall at threshold 0.9: 0.40 against 0.58 at the best epoch), as the soft targets would predict.
 - Colour-jitter strength (`color_jitter`): run `tennis_v2_jitter` (configs/tennis_v2_jitter.yaml: the no-flip recipe at WASB's 0.1 and p 0.5, done 2026-11-18) scored a little below `tennis_v2_noflip`: validation F1 at its best epoch (18) is 0.941 at 4 px, 512x288 and 0.896 at 4 px of the source, lower in most epochs but by an amount one run cannot tell from noise (results doc §6). The default stays at 0.3 with `p: 1.0`.
 - Still open (review doc §5): batch size and learning rate, `torch.compile` speed.
-- Badminton data loading is implemented (`data.format: badminton`, configs/badminton_v2.yaml: 10 epochs, flip off, val Professional/match22, Professional/match23 and Amateur/match3, test the dataset's own Test part). As of 2026-11-17 the real frames have not been extracted and nothing has been trained on badminton.
+- Badminton data loading is implemented (`data.format: badminton`, configs/badminton_v2.yaml: 10 epochs, flip off, val Professional/match22, Professional/match23 and Amateur/match3, test the dataset's own Test part). The real frames are extracted (91,214, 21 GB). First run done 2026-11-18: `badminton_v2` (10 epochs, 10 h 45 min, about 64 min per epoch). Validation F1 at its best epoch (7) is 0.951 at 4 px, 512x288 and 0.914 at 4 px of the source; F1 reached 0.950 at epoch 6 and stayed within 0.002 of it. One seed; not comparable with the tennis numbers or with published badminton results, which are on `Test`. No badminton `Test` frame has been looked at and no model or analysis has been run on it (only its row and frame counts are recorded). Its predictions shift by only 0.22 px when the input is mirrored (tennis: 1.14), which suggests the badminton labels have little horizontal offset, so the flip would probably cost little there; not tried (badminton results doc §5).
 - V5 is deferred.
 
 ## Gotchas

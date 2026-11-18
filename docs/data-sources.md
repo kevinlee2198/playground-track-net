@@ -71,6 +71,7 @@ The `Readme.docx` left at `datasets/tennis/` is harmless: clip discovery looks o
 - In `Professional` and `Amateur`, visibility is only 0 or 1, coordinates are integers, visibility-0 rows have X = Y = 0, and no visible coordinate is outside the frame.
 - Label rows: `Professional` 69,092, `Amateur` 9,466, `Test` 12,656 (91,214 in all; 78,558 outside `Test`, against the published 78,200).
 - In 25 of the 201 rallies the video container reports more frames than the CSV has rows (2 to 51 more; never fewer). That is container metadata, not a decoded count. `extract-frames` treats the surplus as trailing unlabelled frames: video frame i is label row `Frame == i`, and frames past the last label row are dropped and counted.
+- Extraction, run on 2026-11-18: 201 rallies, 91,214 frames written, 365 surplus trailing frames dropped in those 25 rallies, and no rally whose container frame count differs from the decoded count; 5 min 16 s, and `datasets/badminton` is 21 GB afterwards. A check that frame i shows the shuttle at label row i, on `Professional` and `Amateur` only, is in [the badminton results](2026-11-18-badminton-results.md) §3.
 
 `Test` is the dataset's own test set and is held out exactly like tennis game8–10: `configs/badminton_v2.yaml` makes it the test split (validation is `Professional/match22`, `Professional/match23` and `Amateur/match3`: 9,103 label rows in 18 rallies).
 
