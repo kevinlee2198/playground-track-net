@@ -8,7 +8,7 @@ Protocols, as `evaluate` reports them: `model_res_4px` counts a detection within
 
 | Run | Change from the baseline | Best epoch | F1 `model_res_4px` | F1 `source_res_4px` |
 |---|---|---|---|---|
-| `tennis_v2_baseline` | none (configs/default.yaml at f759052) | 20 | 0.949 | 0.771 |
+| `tennis_v2_baseline` | none (configs/default.yaml at f759052; since 2026-11-18, configs/tennis_v2_baseline.yaml) | 20 | 0.949 | 0.771 |
 | `tennis_v2_noflip` | `horizontal_flip: false` | 15 | 0.947 | 0.903 |
 | `tennis_v2_bg` | `background_frame: true` on top of `tennis_v2_noflip` | 15 | 0.949 | 0.909 |
 | `tennis_v2_mixup` | `mixup_alpha: 0.5` on top of `tennis_v2_noflip` | 15 | 0.945 | 0.898 |
@@ -119,7 +119,11 @@ Not done for this run: the failing frames were not cropped and sorted as in §3,
 
 `tennis_v2_noflip` is the run the later experiments are compared with. `configs/default.yaml` still has the flip on, so it still reproduces the baseline; whether the default should change is open.
 
-**For the app:** a model trained without the flip reports positions in the label convention, about 1.5 source px right of and 1.4 px below the ball as it appears. An overlay should subtract that.
+*Update, 2026-11-18: the default has the flip off.* `configs/default.yaml` now has `horizontal_flip: false` and `experiment_name: tennis_v2`, so it trains the no-flip recipe under a name of its own. Without the rename, resuming the baseline's `latest.pt` under the default config would pass the resume guard and, with `epochs` raised past the checkpoint's 30, continue the baseline run with the flip off, with only a warning. configs/tennis_v2_baseline.yaml is default.yaml with the flip on under the baseline's name: it has every setting of default.yaml at f759052 (the keys added since hold the values the code used before them), so it reproduces the baseline and resumes its checkpoints. configs/tennis_v2_noflip.yaml is now default.yaml under the no-flip run's name, with the flip off still set in it. No finished run's numbers change.
+
+*Update, 2026-11-18: `infer` gets no offset correction for now.* Only the horizontal label offset has two independent estimates, the blob centroid of measurement 3 and what the no-flip models imply in the table above; the vertical one rests on the blob centroid alone. The label also leads a moving ball by a similar amount (measurement 3), which no constant correction removes, and nothing in the next phase needs 1.5 source px. When a correction is wanted, it should be one config key on the tennis data (`data.label_offset`, 0 by default), stored in the checkpoint and applied once by `infer` to the CSV and the overlay together, only for models trained without the flip.
+
+**For the app:** a model trained without the flip reports positions in the label convention, about 1.5 source px right of and 1.4 px below the ball as it appears. `infer` does not correct for that (update above).
 
 ## 5. The median background frame
 

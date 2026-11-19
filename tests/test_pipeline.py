@@ -83,8 +83,14 @@ def _fast_training_config(tennis_root, tmp_path, **overrides):
 
 @pytest.mark.parametrize("background", [False, True])
 def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
+    # The default has the flip off; this test keeps it in a real training step.
     config = _fast_training_config(
-        tennis_root, tmp_path, epochs=1, max_steps=2, background_frame=background
+        tennis_root,
+        tmp_path,
+        epochs=1,
+        max_steps=2,
+        background_frame=background,
+        horizontal_flip=True,
     )
     run_training(config)
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"

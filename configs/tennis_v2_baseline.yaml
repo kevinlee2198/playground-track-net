@@ -1,0 +1,9 @@
+# TrackNet V2 on tennis: the first run, with the horizontal-flip augmentation on
+# (docs/2026-11-16-training-results.md §2 and §4). default.yaml had the flip on
+# until 2026-11-18; this file reproduces that run and resumes its checkpoints.
+# Every key not set here comes from default.yaml.
+
+base: default.yaml
+
+horizontal_flip: true
+experiment_name: tennis_v2_baseline

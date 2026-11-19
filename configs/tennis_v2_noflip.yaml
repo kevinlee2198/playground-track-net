@@ -1,5 +1,6 @@
-# TrackNet V2 on tennis: the default recipe without the horizontal-flip
-# augmentation (docs/2026-11-16-training-results.md §4).
+# TrackNet V2 on tennis without the horizontal-flip augmentation
+# (docs/2026-11-16-training-results.md §4). default.yaml has the flip off too
+# since 2026-11-18; it stays set here so this run does not depend on the default.
 # Every key not set here comes from default.yaml.
 
 base: default.yaml

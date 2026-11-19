@@ -197,6 +197,7 @@ _RUN_LENGTH_KEYS = ("epochs", "max_steps")
 _RESTORED_KEYS = ("optimizer", "learning_rate", "weight_decay", "lr_schedule")
 # Config keys added after checkpoints already existed, each with the value the
 # code used before the key: what a checkpoint saved without the key trained with.
+# These are not the current defaults (horizontal_flip now defaults to false).
 _VALUE_BEFORE_KEY: dict[str, object] = {
     "horizontal_flip": True,
     "background_frame": False,
