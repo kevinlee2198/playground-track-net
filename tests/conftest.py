@@ -113,6 +113,94 @@ def write_badminton_video(path: Path, num_frames: int) -> None:
     writer.release()
 
 
+CLIP_SIZE = (160, 90)  # width, height of write_moving_square_clip's frames
+
+
+def write_moving_square_clip(path: Path, num_frames: int) -> Path:
+    """A clip of a fixed dark random scene with a white square moving across it,
+    absent from every seventh frame (i % 7 == 3).
+
+    An mp4v video when ``path`` ends in ``.mp4``, otherwise a directory of PNG
+    frames ``NNNN.png``. mp4v is lossy, so compare decoded frames, not these.
+    """
+    width, height = CLIP_SIZE
+    scene = np.random.default_rng(0).integers(0, 80, (height, width, 3), np.uint8)
+    images = []
+    for i in range(num_frames):
+        img = scene.copy()
+        if i % 7 != 3:
+            x, y = (7 * i) % (width - 12), 20 + 9 * (i % 6)
+            img[y : y + 12, x : x + 12] = 255
+        images.append(img)
+    if path.suffix == ".mp4":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        writer = cv2.VideoWriter(
+            str(path), cv2.VideoWriter.fourcc(*"mp4v"), 25.0, (width, height)
+        )
+        assert writer.isOpened(), f"cannot write {path}"
+        for img in images:
+            writer.write(img)
+        writer.release()
+    else:
+        path.mkdir(parents=True)
+        for i, img in enumerate(images):
+            cv2.imwrite(str(path / f"{i:04d}.png"), img)
+    return path
+
+
+def spy_on_video_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_count: int | None = None,
+    short_pass: tuple[int | None, int] | None = None,
+) -> dict[str, int]:
+    """Replace ``cv2.VideoCapture`` with a wrapper that counts decoding passes.
+
+    A pass is a capture that ``read`` is called on at least once; the returned
+    dict's ``"passes"`` holds how many there have been, and ``"open"`` how many
+    captures have not been released. With ``frame_count`` the wrapper reports
+    that as the container's ``CAP_PROP_FRAME_COUNT``. With ``short_pass=(p, k)``
+    pass ``p`` (counting from 1; None for every pass) ends after ``k`` frames.
+    """
+    real_capture = cv2.VideoCapture
+    stats = {"passes": 0, "open": 0}
+
+    class SpyCapture:
+        def __init__(self, *args):
+            self._cap = real_capture(*args)
+            self._pass = 0
+            self._reads = 0
+            self._open = True
+            stats["open"] += 1
+
+        def read(self):
+            if not self._pass:
+                stats["passes"] += 1
+                self._pass = stats["passes"]
+            self._reads += 1
+            if short_pass is not None:
+                short, length = short_pass
+                if short in (None, self._pass) and self._reads > length:
+                    return False, None
+            return self._cap.read()
+
+        def release(self):
+            if self._open:
+                self._open = False
+                stats["open"] -= 1
+            self._cap.release()
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FRAME_COUNT and frame_count is not None:
+                return float(frame_count)
+            return self._cap.get(prop)
+
+        def __getattr__(self, name):
+            return getattr(self._cap, name)
+
+    monkeypatch.setattr(cv2, "VideoCapture", SpyCapture)
+    return stats
+
+
 def write_badminton_labels(
     path: Path, rows: list[tuple[int, int, int, int]] = BADMINTON_LABEL_ROWS
 ) -> None:

@@ -1,11 +1,13 @@
 """End-to-end: train, evaluate and infer on the miniature tennis dataset."""
 
+import argparse
 import csv
 import logging
 import re
 import shutil
 import subprocess
 import sys
+import weakref
 from pathlib import Path
 from typing import cast
 
@@ -30,9 +32,16 @@ from data import (
     mixup_batch,
     source_to_model,
 )
-from inference.video_preprocess import extract_frames
-from main import build_parser, run_inference
+from inference import video_preprocess
+from inference.postprocess import heatmap_to_coordinates
+from inference.video_preprocess import (
+    SourceInfo,
+    create_sliding_windows,
+    extract_frames,
+)
+from main import _track_and_write, build_parser, run_inference
 from models import TrackNet, build_model
+from tests.conftest import CLIP_SIZE, spy_on_video_capture, write_moving_square_clip
 from training.run import (
     _build_datasets,
     _source_res_distance,
@@ -199,6 +208,300 @@ def test_inference_appends_the_videos_median_background(tmp_path, monkeypatch):
         window = [frames[min(3 * k + j, len(frames) - 1)] for j in range(3)]
         assert torch.equal(x[0, :9], torch.from_numpy(np.concatenate(window))), k
         assert torch.equal(x[0, 9:], torch.from_numpy(background)), k
+
+
+class _MixingModel(nn.Module):
+    """A stand-in for TrackNet whose heatmaps depend on every image of a window.
+
+    Heatmap j is 0.8 of frame j's grey level (less the background's, when the
+    window has one) plus 0.2 of frame j - 1's, cyclically, so the padding of a
+    clip's last window changes its heatmaps. A white square gives a peak.
+    """
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        grey = x.view(b, c // 3, 3, h, w).mean(dim=2)
+        frames = grey[:, :3]
+        if c == 12:
+            frames = (frames - grey[:, 3:]).abs()
+        return 0.8 * frames + 0.2 * frames.roll(1, dims=1)
+
+
+def _infer_args(source: Path, out_csv: Path, *extra: str) -> argparse.Namespace:
+    return build_parser().parse_args(
+        [
+            "infer",
+            "--video",
+            str(source),
+            "--model",
+            str(out_csv.parent / "unused.pt"),
+            "--output",
+            str(out_csv),
+            *extra,
+        ]
+    )
+
+
+def _use_model(monkeypatch, model: nn.Module, background: bool) -> None:
+    # run_inference imports load_model from models when it runs.
+    monkeypatch.setattr(
+        "models.load_model",
+        lambda path, device: (model, {"background_frame": background}),
+    )
+
+
+def _list_based_inference(source: Path, model, background: bool, out_csv: Path):
+    """A reference for run_inference that holds every frame of the source
+    (extract_frames), cuts them into windows (create_sliding_windows), runs the
+    model on each, trims the detections to the frame count, then tracks and writes
+    the CSV as run_inference does."""
+    frames, metadata = extract_frames(str(source))
+    orig_w, orig_h = metadata["original_width"], metadata["original_height"]
+    bg = None
+    if frames and background:
+        bg = median_frame(frames[i] for i in background_indices(len(frames)))
+    windows = create_sliding_windows(frames, window_size=3, stride=3, background=bg)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    detections = []
+    with torch.no_grad():
+        for window in windows:
+            x = torch.from_numpy(window).unsqueeze(0).to(device)
+            for hm in model(x).squeeze(0).cpu().numpy():
+                detections.append(
+                    heatmap_to_coordinates(
+                        hm, orig_width=orig_w, orig_height=orig_h, threshold=0.5
+                    )
+                )
+    detections = detections[: len(frames)]
+    info = SourceInfo(orig_w, orig_h, metadata.get("fps", 30.0))
+    _track_and_write(detections, info, _infer_args(source, out_csv))
+
+
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    ("name", "num_frames"),
+    [
+        ("clip.mp4", 1),
+        ("clip.mp4", 8),
+        ("clip.mp4", 9),
+        ("clip.mp4", 61),
+        ("frames", 8),
+    ],
+)
+def test_streaming_inference_matches_the_list_based_path(
+    tmp_path, monkeypatch, name, num_frames, background
+):
+    # 61 frames take 50 of them for the background; 8 pad the last window.
+    source = write_moving_square_clip(tmp_path / name, num_frames)
+    model = _MixingModel()
+    _use_model(monkeypatch, model, background)
+    run_inference(_infer_args(source, tmp_path / "streamed.csv"))
+    _list_based_inference(source, model, background, tmp_path / "listed.csv")
+
+    streamed = (tmp_path / "streamed.csv").read_text()
+    assert streamed == (tmp_path / "listed.csv").read_text()
+    rows = list(csv.DictReader(streamed.splitlines()))
+    assert len(rows) == num_frames
+    # The square is found, except against the background of a one-frame clip,
+    # which is that frame.
+    found = any(row["Visibility"] == "1" for row in rows)
+    assert found == (num_frames > 1 or not background)
+
+
+class _LiveCounter:
+    """How many of the objects given to ``track`` are alive, now and at most at
+    once. Each is counted until it is freed (weakref.finalize; CPython frees an
+    object as soon as nothing refers to it any more); one tracked twice counts
+    once."""
+
+    def __init__(self):
+        self.alive: set[int] = set()
+        self.max = 0
+
+    def track(self, obj):
+        if id(obj) not in self.alive:
+            self.alive.add(id(obj))
+            self.max = max(self.max, len(self.alive))
+            weakref.finalize(obj, self.alive.discard, id(obj))
+        return obj
+
+
+class _CountingModel(_MixingModel):
+    """_MixingModel, counting the inputs it is given and the outputs it returns
+    while they are alive."""
+
+    def __init__(self):
+        super().__init__()
+        self.inputs = _LiveCounter()
+        self.outputs = _LiveCounter()
+        self.calls = 0
+
+    def forward(self, x):
+        self.calls += 1
+        self.inputs.track(x)
+        return self.outputs.track(super().forward(x))
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_inference_holds_only_a_few_frames_at_once(tmp_path, monkeypatch, background):
+    # Counts what infer holds of the video while it runs: the preprocessed
+    # frames, the windows built from them (copies), the model's inputs and
+    # outputs, and the heatmap arrays (numpy, copied from the outputs on CUDA)
+    # that the detections are taken from.
+    frames, windows, heatmaps = _LiveCounter(), _LiveCounter(), _LiveCounter()
+    preprocess = video_preprocess.preprocess_frame
+    concatenate = video_preprocess._concatenate
+
+    def to_coordinates(hm, **kwargs):
+        assert hm.base is not None  # a row of the window's heatmap array
+        heatmaps.track(hm.base)
+        return heatmap_to_coordinates(hm, **kwargs)
+
+    monkeypatch.setattr(
+        video_preprocess, "preprocess_frame", lambda f: frames.track(preprocess(f))
+    )
+    monkeypatch.setattr(
+        video_preprocess,
+        "_concatenate",
+        lambda *args: windows.track(concatenate(*args)),
+    )
+    monkeypatch.setattr("main.heatmap_to_coordinates", to_coordinates)
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 200)
+    model = _CountingModel()
+    _use_model(monkeypatch, model, background)
+    run_inference(_infer_args(video, tmp_path / "pred.csv"))
+
+    with open(tmp_path / "pred.csv") as f:
+        assert len(list(csv.DictReader(f))) == 200
+    assert model.calls == 67
+    # A window holds three frames; a background model also holds the 50 frames
+    # its median is taken over, which are freed before the first window.
+    assert 3 <= frames.max <= 6 + (50 if background else 0)
+    # The next window, input, output and heatmaps are made while the loop still
+    # refers to the last ones.
+    for counter in (windows, model.inputs, model.outputs, heatmaps):
+        assert 1 <= counter.max <= 2
+
+
+@pytest.mark.parametrize(("background", "passes"), [(False, 1), (True, 3)])
+def test_inference_decodes_the_video_once_or_three_times_with_a_background(
+    tmp_path, monkeypatch, background, passes
+):
+    # The container claims 810,570 frames for 61: the frame count a background
+    # model's frames are chosen by must come from decoding.
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 61)
+    model = _MixingModel()
+    _use_model(monkeypatch, model, background)
+    stats = spy_on_video_capture(monkeypatch, frame_count=810_570)
+    run_inference(_infer_args(video, tmp_path / "streamed.csv"))
+    assert stats["passes"] == passes
+
+    _list_based_inference(video, model, background, tmp_path / "listed.csv")
+    streamed = (tmp_path / "streamed.csv").read_text()
+    assert streamed == (tmp_path / "listed.csv").read_text()
+    assert len(streamed.splitlines()) == 1 + 61
+
+
+@pytest.mark.parametrize(
+    ("short_pass", "then"),
+    [
+        (2, "ended after 8 frames when collecting the background"),
+        (3, "to 8 frames when run through the model"),
+    ],
+)
+def test_background_inference_refuses_a_video_that_decodes_differently(
+    tmp_path, monkeypatch, short_pass, then
+):
+    # Pass 1 counts 9 frames, pass 2 collects the background's frames, pass 3
+    # runs the model; either ending a frame early must stop infer before it
+    # writes anything.
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 9)
+    _use_model(monkeypatch, _MixingModel(), True)
+    spy_on_video_capture(monkeypatch, short_pass=(short_pass, 8))
+    with pytest.raises(RuntimeError) as raised:
+        run_inference(_infer_args(video, tmp_path / "pred.csv"))
+    assert str(raised.value) == (
+        f"{video} decoded to 9 frames when counted for the background frame, "
+        f"but {then}: it does not decode the same way twice"
+    )
+    assert not (tmp_path / "pred.csv").exists()
+
+
+@pytest.mark.parametrize("counted", [7, 0])
+def test_background_inference_stops_as_soon_as_the_model_pass_has_more_frames(
+    tmp_path, monkeypatch, counted
+):
+    # Pass 1 counts fewer frames than the 9 the model pass yields: infer stops at
+    # the window that goes past the count (the third for 7), before the model
+    # sees it. Counting 0 builds no background, and a 12-channel model would fail
+    # on the 9-channel windows.
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 9)
+    model = _CountingModel()
+    _use_model(monkeypatch, model, True)
+    stats = spy_on_video_capture(monkeypatch, short_pass=(1, counted))
+    with pytest.raises(RuntimeError) as raised:
+        run_inference(_infer_args(video, tmp_path / "pred.csv"))
+    stopped_at = 3 * (counted // 3 + 1)  # the end of the window past the count
+    assert str(raised.value) == (
+        f"{video} decoded to {counted} frames when counted for the background "
+        f"frame, but to at least {stopped_at} frames when run through the model: "
+        "it does not decode the same way twice"
+    )
+    assert model.calls == counted // 3
+    assert stats["passes"] == (3 if counted else 2)
+    assert not (tmp_path / "pred.csv").exists()
+
+
+def test_inference_releases_the_video_when_the_model_fails(tmp_path, monkeypatch):
+    # The traceback refers to run_inference's frame and so to the suspended
+    # frame reader; the capture must not wait for it to be dropped.
+    class FailingModel(_MixingModel):
+        def forward(self, x):
+            raise RuntimeError("model failed")
+
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 9)
+    _use_model(monkeypatch, FailingModel(), False)
+    stats = spy_on_video_capture(monkeypatch)
+    with pytest.raises(RuntimeError, match="model failed") as raised:
+        run_inference(_infer_args(video, tmp_path / "pred.csv"))
+    assert raised.traceback  # still held
+    assert stats == {"passes": 1, "open": 0}
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_inference_on_a_video_that_decodes_no_frames(tmp_path, monkeypatch, background):
+    # The file opens, but no frame decodes in any pass: a CSV with no rows.
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 9)
+    model = _CountingModel()
+    _use_model(monkeypatch, model, background)
+    spy_on_video_capture(monkeypatch, short_pass=(None, 0))
+    run_inference(_infer_args(video, tmp_path / "pred.csv"))
+    assert (tmp_path / "pred.csv").read_text().splitlines() == [
+        "Frame,X,Y,Confidence,Visibility"
+    ]
+    assert model.calls == 0
+
+
+def test_inference_writes_the_annotated_video(tmp_path, monkeypatch):
+    # Its frame size and rate are the source's, from read_source_info.
+    video = write_moving_square_clip(tmp_path / "clip.mp4", 9)
+    out_video = tmp_path / "annotated.mp4"
+    _use_model(monkeypatch, _MixingModel(), False)
+    run_inference(
+        _infer_args(video, tmp_path / "pred.csv", "--output-video", str(out_video))
+    )
+
+    cap = cv2.VideoCapture(str(out_video))
+    assert cap.isOpened()
+    size = (cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    decoded = 0
+    while cap.read()[0]:
+        decoded += 1
+    cap.release()
+    assert decoded == 9
+    assert size == CLIP_SIZE
+    assert fps == 25.0
 
 
 def _background_warnings(caplog) -> list[str]:

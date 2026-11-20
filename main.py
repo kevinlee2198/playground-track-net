@@ -2,11 +2,20 @@ import argparse
 import csv
 import json
 import logging
+from contextlib import closing
 from pathlib import Path
 
 from inference.postprocess import heatmap_to_coordinates, trajectory_rectification
 from inference.tracker import KalmanBallTracker
-from inference.video_preprocess import create_sliding_windows, extract_frames
+from inference.video_preprocess import (
+    SourceEndedError,
+    SourceInfo,
+    count_frames,
+    iter_frames,
+    iter_windows,
+    read_frames_at,
+    read_source_info,
+)
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -141,13 +150,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_inference(args: argparse.Namespace) -> None:
-    """Run the full inference pipeline."""
-    # 1. Extract and preprocess frames
-    print(f"Extracting frames from {args.video}...")
-    frames, metadata = extract_frames(args.video)
-    orig_w = metadata["original_width"]
-    orig_h = metadata["original_height"]
-    print(f"Extracted {len(frames)} frames ({orig_w}x{orig_h})")
+    """Run the full inference pipeline.
+
+    Frames are read one at a time and dropped once their window has been
+    through the model. No frames are kept, only the detections. The source is
+    decoded once, or three times for a model with a background frame, and once
+    more for ``--output-video``. With a background frame, it stops before
+    writing anything if the background pass ends early or the model pass yields
+    a different number of frames from the first pass.
+    """
+    # 1. Read the source's size and frame rate
+    info = read_source_info(args.video)
+    print(f"Reading {args.video} ({info.width}x{info.height})")
 
     # 2. Load the model as it was trained
     import torch
@@ -158,39 +172,78 @@ def run_inference(args: argparse.Namespace) -> None:
 
     model, stored = load_model(args.model, device)
 
-    # 3. Create sliding windows, each with the video's median background frame
-    # after its three frames if the model was trained with one
+    # 3. A model trained with a background frame gets the median of up to 50
+    # evenly spaced frames after the three frames of every window. Choosing
+    # them needs the number of frames that decode, so one pass counts the
+    # frames and a second collects the chosen ones.
     background = None
-    if frames and stored is not None and stored.get("background_frame", False):
+    num_frames = None
+    if stored is not None and stored.get("background_frame", False):
         from data import background_indices, median_frame
 
-        background = median_frame(frames[i] for i in background_indices(len(frames)))
-    windows = create_sliding_windows(
-        frames, window_size=3, stride=3, background=background
-    )
-    print(f"Created {len(windows)} sliding windows")
+        num_frames = count_frames(args.video)
+        if num_frames:
+            indices = background_indices(num_frames)
+            try:
+                chosen = read_frames_at(args.video, indices)
+            except SourceEndedError as e:
+                raise _decodes_differently(
+                    args.video,
+                    num_frames,
+                    f"ended after {e.decoded} frames when collecting the background",
+                ) from e
+            background = median_frame(chosen)
+            print(f"Background: median of {len(indices)} of {num_frames} frames")
 
-    # 4. Run inference on each window
+    # 4. Run the model on each window of three frames, the last padded by
+    # repeating the last frame, keeping one detection per frame of the source
     all_detections: list[tuple[float, float, float] | None] = []
+    decoded = 0
     model.eval()
-    with torch.no_grad():
-        for window in windows:
+    with closing(iter_frames(args.video)) as frames, torch.no_grad():
+        for window, real in iter_windows(frames, window_size=3, background=background):
+            decoded += real
+            if num_frames is not None and decoded > num_frames:
+                raise _decodes_differently(
+                    args.video,
+                    num_frames,
+                    f"to at least {decoded} frames when run through the model",
+                )
             input_tensor = torch.from_numpy(window).unsqueeze(0).to(device)
             heatmaps = model(input_tensor)  # (1, 3, H, W)
             heatmaps = heatmaps.squeeze(0).cpu().numpy()  # (3, H, W)
 
-            for hm in heatmaps:
+            for hm in heatmaps[:real]:
                 result = heatmap_to_coordinates(
                     hm,
-                    orig_width=orig_w,
-                    orig_height=orig_h,
+                    orig_width=info.width,
+                    orig_height=info.height,
                     threshold=args.threshold,
                 )
                 all_detections.append(result)
+    print(f"Ran the model on {len(all_detections)} frames")
+    if num_frames is not None and decoded < num_frames:
+        raise _decodes_differently(
+            args.video, num_frames, f"to {decoded} frames when run through the model"
+        )
 
-    # Trim to actual frame count (sliding windows may overshoot)
-    all_detections = all_detections[: len(frames)]
+    _track_and_write(all_detections, info, args)
 
+
+def _decodes_differently(video: str, counted: int, then: str) -> RuntimeError:
+    return RuntimeError(
+        f"{video} decoded to {counted} frames when counted for the background "
+        f"frame, but {then}: it does not decode the same way twice"
+    )
+
+
+def _track_and_write(
+    all_detections: list[tuple[float, float, float] | None],
+    info: SourceInfo,
+    args: argparse.Namespace,
+) -> None:
+    """Rectify and smooth one detection per frame of ``args.video``, write them
+    to the ``args.output`` CSV and, if asked, draw them on ``args.output_video``."""
     # 5. Trajectory rectification
     positions = [(d[0], d[1]) if d is not None else None for d in all_detections]
     rectified = trajectory_rectification(positions, window=8)
@@ -250,9 +303,10 @@ def run_inference(args: argparse.Namespace) -> None:
         from utils.visualization import draw_ball_on_frame
 
         cap = cv2.VideoCapture(args.video)
-        fps = metadata.get("fps", 30.0)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(args.output_video, fourcc, fps, (orig_w, orig_h))
+        out = cv2.VideoWriter(
+            args.output_video, fourcc, info.fps, (info.width, info.height)
+        )
 
         for r in final_results:
             ret, frame = cap.read()

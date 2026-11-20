@@ -3,13 +3,21 @@ import sys
 
 import cv2
 import numpy as np
+import pytest
 from inference.video_preprocess import (
+    SourceInfo,
+    count_frames,
     extract_frames,
+    iter_frames,
+    iter_windows,
     preprocess_frame,
     create_sliding_windows,
+    read_frames_at,
+    read_source_info,
 )
 from inference.postprocess import heatmap_to_coordinates, trajectory_rectification
 from inference.tracker import KalmanBallTracker
+from tests.conftest import CLIP_SIZE, spy_on_video_capture, write_moving_square_clip
 from utils.visualization import draw_ball_on_frame
 
 
@@ -99,6 +107,98 @@ class TestExtractFrames:
         assert metadata["original_width"] == 1280
         assert metadata["original_height"] == 720
         assert frames[0].shape == (3, 288, 512)
+
+
+class TestIterWindows:
+    @pytest.mark.parametrize("n", range(7))  # 0 to 2 full windows, 0 to 2 left over
+    @pytest.mark.parametrize("with_background", [False, True])
+    def test_matches_create_sliding_windows(self, n, with_background):
+        rng = np.random.default_rng(n)
+        frames = [rng.random((3, 8, 16), dtype=np.float32) for _ in range(n)]
+        background = None
+        if with_background:
+            background = rng.random((3, 8, 16), dtype=np.float32)
+        expected = create_sliding_windows(
+            frames, window_size=3, stride=3, background=background
+        )
+        streamed = list(iter_windows(iter(frames), background=background))
+        for k, ((window, real), want) in enumerate(
+            zip(streamed, expected, strict=True)
+        ):
+            np.testing.assert_array_equal(window, want)
+            assert real == min(3, n - 3 * k)  # frames of the clip, not padding
+
+    def test_pulls_frames_one_window_at_a_time(self):
+        pulled = []
+
+        def frames():
+            for i in range(9):
+                pulled.append(i)
+                yield np.full((3, 2, 2), i, dtype=np.float32)
+
+        windows = iter_windows(frames())
+        next(windows)
+        assert pulled == [0, 1, 2]
+        next(windows)
+        assert pulled == [0, 1, 2, 3, 4, 5]
+
+
+@pytest.fixture(params=["video", "dir"])
+def clip(request, tmp_path):
+    """An 8-frame moving-square clip, as an mp4v video or a PNG directory."""
+    name = "clip.mp4" if request.param == "video" else "frames"
+    return write_moving_square_clip(tmp_path / name, 8)
+
+
+class TestStreamingRead:
+    def test_iter_frames_yields_what_extract_frames_returns(self, clip):
+        frames, _ = extract_frames(str(clip))
+        streamed = list(iter_frames(clip))
+        assert len(streamed) == len(frames) == 8
+        for got, want in zip(streamed, frames, strict=True):
+            np.testing.assert_array_equal(got, want)
+
+    def test_source_info_matches_extract_frames_metadata(self, clip):
+        _, metadata = extract_frames(str(clip))
+        info = read_source_info(clip)
+        assert info == SourceInfo(*CLIP_SIZE, metadata.get("fps", 30.0))
+        assert (info.width, info.height) == (
+            metadata["original_width"],
+            metadata["original_height"],
+        )
+
+    def test_count_frames(self, clip):
+        assert count_frames(clip) == 8
+
+    def test_count_frames_ignores_the_containers_frame_count(
+        self, tmp_path, monkeypatch
+    ):
+        video = write_moving_square_clip(tmp_path / "clip.mp4", 8)
+        spy_on_video_capture(monkeypatch, frame_count=810_570)
+        assert count_frames(video) == 8
+
+    def test_read_frames_at(self, clip):
+        frames, _ = extract_frames(str(clip))
+        chosen = read_frames_at(clip, [0, 3, 7])
+        assert len(chosen) == 3
+        for got, i in zip(chosen, [0, 3, 7], strict=True):
+            np.testing.assert_array_equal(got, frames[i])
+
+    def test_read_frames_at_past_the_end_raises(self, clip):
+        with pytest.raises(ValueError, match="8 frames"):
+            read_frames_at(clip, [0, 8])
+
+    def test_missing_video_raises_when_called(self, tmp_path):
+        with pytest.raises(ValueError, match="Failed to open video"):
+            iter_frames(tmp_path / "missing.mp4")
+        with pytest.raises(ValueError, match="Failed to open video"):
+            read_source_info(tmp_path / "missing.mp4")
+
+    def test_empty_directory_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="No image files"):
+            iter_frames(tmp_path)
+        with pytest.raises(ValueError, match="No image files"):
+            read_source_info(tmp_path)
 
 
 class TestHeatmapToCoordinates:
