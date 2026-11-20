@@ -201,6 +201,7 @@ def run_inference(args: argparse.Namespace) -> None:
                     f"ended after {e.decoded} frames when collecting the background",
                 ) from e
             background = median_frame(chosen)
+            del chosen  # 50 frames (88 MB) the model pass has no use for
             print(f"Background: median of {len(indices)} of {num_frames} frames")
 
     # 4. Run the model on each window of three frames, the last padded by

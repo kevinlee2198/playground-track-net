@@ -368,25 +368,26 @@ class _CountingModel(_MixingModel):
 def test_inference_holds_only_a_few_frames_at_once(tmp_path, monkeypatch, background):
     # Counts what infer holds of the video while it runs: the preprocessed
     # frames, the windows built from them (copies), the model's inputs and
-    # outputs, and the heatmap arrays (numpy, copied from the outputs on CUDA)
-    # that the detections are taken from.
+    # outputs, and what the heatmap rows the detections are taken from are views
+    # of (the output tensor on CPU, its copy on CUDA).
     frames, windows, heatmaps = _LiveCounter(), _LiveCounter(), _LiveCounter()
+    frames_alive_per_window: list[int] = []
     preprocess = video_preprocess.preprocess_frame
     concatenate = video_preprocess._concatenate
 
     def to_coordinates(hm, **kwargs):
-        assert hm.base is not None  # a row of the window's heatmap array
+        assert hm.base is not None  # a row of the window's heatmaps
         heatmaps.track(hm.base)
         return heatmap_to_coordinates(hm, **kwargs)
+
+    def concatenate_counting(*args):
+        frames_alive_per_window.append(len(frames.alive))
+        return windows.track(concatenate(*args))
 
     monkeypatch.setattr(
         video_preprocess, "preprocess_frame", lambda f: frames.track(preprocess(f))
     )
-    monkeypatch.setattr(
-        video_preprocess,
-        "_concatenate",
-        lambda *args: windows.track(concatenate(*args)),
-    )
+    monkeypatch.setattr(video_preprocess, "_concatenate", concatenate_counting)
     monkeypatch.setattr("main.heatmap_to_coordinates", to_coordinates)
     video = write_moving_square_clip(tmp_path / "clip.mp4", 200)
     model = _CountingModel()
@@ -396,9 +397,10 @@ def test_inference_holds_only_a_few_frames_at_once(tmp_path, monkeypatch, backgr
     with open(tmp_path / "pred.csv") as f:
         assert len(list(csv.DictReader(f))) == 200
     assert model.calls == 67
-    # A window holds three frames; a background model also holds the 50 frames
-    # its median is taken over, which are freed before the first window.
+    # A window holds three frames. A background model first holds the 50 frames
+    # its median is taken over, and has freed them when the first window is built.
     assert 3 <= frames.max <= 6 + (50 if background else 0)
+    assert max(frames_alive_per_window) <= 6
     # The next window, input, output and heatmaps are made while the loop still
     # refers to the last ones.
     for counter in (windows, model.inputs, model.outputs, heatmaps):
