@@ -9,10 +9,10 @@ Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
 - `uv sync` — install deps
-- `uv run pytest tests/ -q -n 4` — run all tests (400 tests, 60–80 s; serial `-v` takes about as long)
+- `uv run pytest tests/ -q -n 4` — run all tests (455 tests, 60–80 s; serial `-v` takes about as long)
 - `uv run ruff format .` — format code
 - `uv run ruff check --fix .` — lint and auto-fix
-- `uv run ty check` — type check (12 pre-existing diagnostics as of 2026-11-15)
+- `uv run ty check` — type check (9 pre-existing diagnostics as of 2026-11-20)
 - `uv run pytest tests/test_models.py -v` — model tests only
 - `uv run pytest tests/test_data.py -v` — data tests only
 - `uv run pytest tests/test_training.py -v` — training tests only
@@ -32,7 +32,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - Use `torchvision.transforms.v2` imports, not v1
 - Use `torch.amp.autocast(device_type, dtype=torch.bfloat16)`, not deprecated `torch.cuda.amp`
 - No filterpy — custom NumPy Kalman filter instead (filterpy dead since 2018)
-- scipy for connected components (ndimage.label) and spline interpolation
+- scipy for connected components (ndimage.label)
 
 ## Architecture
 - models/ — U-Net backbone, TrackNet wrapper, WBCE loss, MDD module, R-STR head; checkpoint.py: `build_model` (the V2 model a config trains, 9 or 12 input channels), `load_model` (the model a checkpoint was trained as, plus its stored config), `load_model_weights`
@@ -79,6 +79,8 @@ Datasets (links, licences, verification log): docs/data-sources.md
 - `mixup_alpha` (default 0, off) is TrackNetV3's sample mixup: each training batch, on the device before the forward pass, is blended with a random permutation of itself, frames and heatmaps alike, one weight `max(lam, 1 - lam)` per sample with `lam` from Beta(alpha, alpha). Validation is never mixed. With batch size 2 the permutation pairs each sample with itself half the time, so about half the batches are not mixed. Its draws come from torch's global generator, so a mixup run does not share the off run's sample order after the first epoch. The training loss of a mixup run has a floor above zero from the soft targets, about 1.4e-5 by calculation (`tennis_v2_mixup` ended 1.6e-5 above `tennis_v2_noflip`), so compare runs on validation F1, not training loss
 - `color_jitter` has four keys: `brightness`, `contrast`, `saturation` and `p`, the share of training windows jittered. One draw covers every image in a window (and the background, if any). With `p: 1.0` (the default) no number is drawn for the decision, so it draws exactly what the hard-coded jitter drew
 - `infer` and `evaluate` build the model from the config stored in the checkpoint (`load_model`). The checkpoint's `background_frame` wins over the config passed to `evaluate`, with a warning when they differ; a checkpoint saved before the key existed counts as false. A bare state dict is the 9-channel V2 model. `infer` still always works at 512x288, and builds the background from the median of up to 50 evenly spaced frames of the video it is given, so for such a model give it one static-camera clip: a video with cuts or camera motion has no meaningful median
+- `infer` fills a run of missing frames (`trajectory_rectification`) along the straight line between the detections on either side of it, and never extrapolates. It fills only runs of at most `MAX_FILL_GAP` (4) frames whose two detections are at most `MAX_FILL_SPEED` (10% of the frame width) apart per frame, both set in main.py; under 0.1% of labelled ball movement in the tennis and badminton train and validation labels is faster than that. A gap between the ball and a nearby false detection is still filled; the spline fill this replaced extrapolated positions thousands of pixels outside the frame on amateur clips with background clutter
+- `infer` streams the source one frame at a time (`iter_frames` and `iter_windows` in inference/video_preprocess.py; the windows and end padding are those of `create_sliding_windows`). It keeps no frames, only the detections (a few hundred bytes per frame). It decodes the source once for a model without a background frame. For one with a background frame it decodes it three times: to count the frames that decode (the container's frame count can be wrong and is not used), to collect the up to 50 the median is taken over, and to run the model. It stops before writing anything if the background pass ends early or the model pass yields a different number of frames from the first. `--output-video` decodes the source once more. `extract_frames` loads every frame (1.77 MB each at 512x288) and only tests use it; never call it on a long video
 - A config file must have every key or inherit them from `default.yaml` via `base: <path>` (paths relative to the file naming them, chains allowed). Nested dicts merge key by key, so an experiment can override one key of `data:`
 - With `background_frame: true`, each clip decodes up to 50 frames when a dataset is built, to compute its median background: 28 s of start-up for the train and val splits (65 clips), against 0.3 s without. The background is computed once per clip at model resolution, and the training transforms (jitter, flip) apply to it as to the frames
 - Skip connections tapped BEFORE MaxPool in encoder
