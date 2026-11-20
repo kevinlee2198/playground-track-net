@@ -87,6 +87,8 @@ playground-track-net/
     test_training.py    # Trainer loop, metrics, checkpointing, resume, configs (71 tests)
     test_inference.py   # Postprocess, tracker, video preprocess, streaming read (62 tests)
     test_pipeline.py    # End to end: train, evaluate, check-data, infer (streaming), badminton extract-frames (77 tests)
+    test_held_out.py    # The test split and held-out videos need --final; no held-out game in train or val (34 tests)
+    test_hooks.py       # Guard hooks in .claude/hooks/: held-out paths, --final, memory cap (232 tests)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
@@ -111,9 +113,10 @@ playground-track-net/
 | Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; five full 30-epoch runs | 71 in `test_training.py` |
 | Inference (postprocess, Kalman tracker, streaming video I/O) | Done; run on one real clip (before it streamed) | 62 in `test_inference.py` |
 | CLI (`train` / `evaluate` / `check-data` / `extract-frames` / `infer` subcommands) | Done | 77 in `test_pipeline.py` |
+| Guards (test split behind `--final`; Claude Code hooks for held-out paths and the memory cap) | Done | 34 in `test_held_out.py`, 232 in `test_hooks.py` |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 455 tests (60–80 s, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 666 tests (about 95 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
@@ -146,8 +149,9 @@ Details, file references and the measured preflight numbers are in [docs/2026-11
 # Install dependencies
 uv sync
 
-# Run the full test suite
-uv run pytest tests/ -q -n 4
+# Run the full test suite, serially and under a memory cap
+# (on this WSL machine, running out of memory shuts down the whole session)
+scripts/capped.sh uv run pytest tests/ -q
 
 # Format and lint
 uv run ruff format .
@@ -162,9 +166,10 @@ uv run ty check
 `configs/default.yaml` expects the TrackNet tennis dataset at `datasets/tennis/<game>/<clip>/` and splits it by game: train game1–6, validate on game7, test on game8–10. The zip's top-level folder is `Dataset/`, so it must be extracted and renamed, not unpacked straight into `datasets/tennis`; the commands are under "Set up for training" in [docs/data-sources.md](docs/data-sources.md).
 
 ```bash
-# Log clip, frame and visibility counts per split and draw labels on sample frames.
+# Log clip, frame and visibility counts per split and draw labels on sample frames
+# (train and val; --final adds the test split, once the model is final).
 # Open a few overlays: the ball should sit inside the circle in each enlarged crop.
-uv run python main.py check-data --config configs/default.yaml --out /tmp/overlays --count 12
+scripts/capped.sh uv run python main.py check-data --config configs/default.yaml --out /tmp/overlays --count 12
 
 # Train. Writes checkpoints/<experiment_name>/latest.pt every epoch, best.pt (below), and TensorBoard logs in runs/<experiment_name>/.
 # --max-steps N stops once N optimizer steps have been taken in total, counting steps restored by --resume
@@ -176,9 +181,9 @@ uv run python main.py train --config configs/default.yaml
 uv run python main.py train --config configs/default.yaml \
   --resume checkpoints/tennis_v2/latest.pt
 
-# Evaluate a checkpoint; prints JSON with both protocols. --split defaults to test,
-# so pass --split val until the model is final.
-uv run python main.py evaluate --config configs/default.yaml \
+# Evaluate a checkpoint; prints JSON with both protocols. --split defaults to val;
+# --split test also needs --final, for when the model is final.
+scripts/capped.sh uv run python main.py evaluate --config configs/default.yaml \
   --weights checkpoints/tennis_v2/latest.pt --split val
 ```
 
@@ -209,13 +214,13 @@ uv run python main.py evaluate --config configs/default.yaml \
 uv run python main.py extract-frames --root datasets/badminton [--jpeg-quality 95]
 
 # Then check-data, train and evaluate as for tennis, with this config.
-uv run python main.py check-data --config configs/badminton_v2.yaml --out /tmp/overlays-badminton
+scripts/capped.sh uv run python main.py check-data --config configs/badminton_v2.yaml --out /tmp/overlays-badminton
 uv run python main.py train --config configs/badminton_v2.yaml
-uv run python main.py evaluate --config configs/badminton_v2.yaml \
+scripts/capped.sh uv run python main.py evaluate --config configs/badminton_v2.yaml \
   --weights checkpoints/badminton_v2/latest.pt --split val
 ```
 
-- **A split needs frames only when it is built.** `train` and `evaluate --split val` need only the `Professional` and `Amateur` frames; `check-data` builds all three splits, so it also needs `Test` extracted. A rally of a built split without frames stops with an error naming it and the `extract-frames` command.
+- **A split needs frames only when it is built.** `train` and `evaluate --split val` need only the `Professional` and `Amateur` frames; `check-data` builds train and val, and needs `Test` extracted only with `--final`. A rally of a built split without frames stops with an error naming it and the `extract-frames` command.
 - **Groups are `<part>/<match>`**, because match names repeat across parts. Validation is `Professional/match22`, `Professional/match23` and `Amateur/match3`; test is the dataset's own `Test` part, held out exactly like tennis game8–10. Overlay file names write the group with `-` for `/`.
 - **Frame `i` of a video is the label row `Frame == i`.** Some videos have more frames than their CSV has rows; those trailing frames are dropped and counted in the log. A video with fewer frames than rows, or a CSV whose frame ids are not exactly 0..N-1, stops extraction with an error naming the rally.
 - **Each rally is written to `frames/<rally>.partial` and renamed into place when complete.** A leftover `.partial` directory is redone, which is why two extractions must not share a root; a `frames/<rally>` directory that holds anything other than exactly the expected files, or an empty file, stops extraction, and is left for you to remove. Extraction stops at the first rally with an error; those finished before it are kept, and those after it (in the order Amateur, Professional, Test) are not started until it is dealt with.
@@ -252,7 +257,7 @@ model, config = load_model("checkpoints/tennis_v2_baseline/best.pt", torch.devic
 ### Run inference on a video
 
 ```bash
-uv run python main.py infer \
+scripts/capped.sh uv run python main.py infer \
   --video path/to/match.mp4 \
   --model path/to/weights.pt \
   --output predictions.csv \
@@ -262,7 +267,7 @@ uv run python main.py infer \
 
 Outputs a CSV with `Frame, X, Y, Confidence, Visibility` columns and (optionally) an annotated MP4 with ball overlays drawn by [utils/visualization.py](utils/visualization.py).
 
-`--model` takes a trainer checkpoint (`latest.pt` or `best.pt`) or a bare state dict for the default V2 `TrackNet()`. A trainer checkpoint is built as it was trained, from the config stored in it; if that config has `background_frame: true`, every window also gets the median of up to 50 evenly spaced frames of the input video as its background, so give such a model one static-camera clip: a video with cuts or camera motion has no meaningful median. `infer` always works at 512x288. Frames are converted to RGB, as in training.
+`--model` takes a trainer checkpoint (`latest.pt` or `best.pt`) or a bare state dict for the default V2 `TrackNet()`. A trainer checkpoint is built as it was trained, from the config stored in it; if that config has `background_frame: true`, every window also gets the median of up to 50 evenly spaced frames of the input video as its background, so give such a model one static-camera clip: a video with cuts or camera motion has no meaningful median. `infer` always works at 512x288. Frames are converted to RGB, as in training. A video in the held-out test data (`tennis/game8`–`game10`, `badminton/Test`) also needs `--final`, for when the model is final; without it `infer` stops before loading anything.
 
 `infer` reads the video one frame at a time. It keeps no frames, only the detections (a few hundred bytes per frame). It decodes the video once for a model without a background frame. A model with one needs two extra passes first: one counts the frames that decode (the container's frame count can be wrong), the other collects the up to 50 frames the median is taken over. `infer` stops before writing anything if that second pass ends early or the model pass yields a different number of frames from the first. `--output-video` decodes the video once more.
 
