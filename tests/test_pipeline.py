@@ -308,6 +308,28 @@ def test_streaming_inference_matches_the_list_based_path(
     assert found == (num_frames > 1 or not background)
 
 
+def test_infer_fills_a_short_gap_in_a_track_but_does_not_join_far_clusters(
+    tmp_path,
+):
+    """On a 320-wide frame: a cluster on the left, three missing frames, then a
+    track on the right, 260 px (65 px per frame) from the cluster, which is
+    faster than the fill allows. The track then misses two frames while moving
+    5 px per frame, which is filled."""
+    left = [(20.0, 90.0, 0.9), (25.0, 90.0, 0.9), (30.0, 90.0, 0.9)]
+    right = [(290.0, 90.0, 0.9), (285.0, 90.0, 0.9), (280.0, 90.0, 0.9)]
+    right_on = [(265.0, 90.0, 0.9), (260.0, 90.0, 0.9)]
+    detections = [*left, *[None] * 3, *right, None, None, *right_on]
+    out_csv = tmp_path / "out.csv"
+    _track_and_write(
+        detections,
+        SourceInfo(320, 180, 30.0),
+        _infer_args(tmp_path / "unused.mp4", out_csv),
+    )
+    rows = list(csv.DictReader(out_csv.read_text().splitlines()))
+    visible = [int(row["Frame"]) for row in rows if row["Visibility"] == "1"]
+    assert visible == [0, 1, 2, *range(6, 13)]
+
+
 class _LiveCounter:
     """How many of the objects given to ``track`` are alive, now and at most at
     once. Each is counted until it is freed (weakref.finalize; CPython frees an

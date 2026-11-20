@@ -1,6 +1,9 @@
+import math
+from collections.abc import Sequence
+from itertools import pairwise
+
 import numpy as np
 from scipy import ndimage
-from scipy.interpolate import UnivariateSpline
 
 from data.heatmap import model_to_source
 
@@ -48,52 +51,39 @@ def heatmap_to_coordinates(
 
 
 def trajectory_rectification(
-    detections: list[tuple[float, float] | None],
-    window: int = 8,
+    detections: Sequence[tuple[float, float] | None],
+    max_gap: int = 4,
+    max_speed: float | None = None,
 ) -> list[tuple[float, float] | None]:
-    """Interpolate missing ball positions using spline fitting on surrounding detections.
+    """Fill short gaps between detections by linear interpolation.
+
+    A run of missing frames is filled only when it lies between two detections,
+    is at most ``max_gap`` frames long and, if ``max_speed`` is given, the
+    distance between the two detections divided by the number of frames from
+    one to the other is at most ``max_speed``. Each filled frame lies on the
+    straight line between the two detections.
+    Nothing is extrapolated: frames before the first detection, after the last,
+    or in a gap that fails either limit stay None.
 
     Args:
-        detections: List of (x, y) tuples or None for each frame.
-        window: Number of surrounding frames to consider for fitting.
+        detections: (x, y) in source pixels, or None, for each frame.
+        max_gap: The longest run of missing frames that is filled.
+        max_speed: The fastest, in pixels per frame, the ball may have to travel
+            between the two detections for their gap to be filled; None for no
+            limit.
 
     Returns:
-        New list with gaps filled where possible. Existing detections are preserved.
+        A new list with the gaps filled. Detections are returned unchanged.
     """
-    n = len(detections)
     result = list(detections)
-
-    for i in range(n):
-        if result[i] is not None:
+    known = [(i, d) for i, d in enumerate(detections) if d is not None]
+    for (before, (x0, y0)), (after, (x1, y1)) in pairwise(known):
+        frames = after - before
+        if frames - 1 > max_gap:
             continue
-
-        # Gather known positions within the window
-        half_w = window // 2
-        start = max(0, i - half_w)
-        end = min(n, i + half_w + 1)
-
-        known_indices = []
-        known_x = []
-        known_y = []
-        for j in range(start, end):
-            if detections[j] is not None:
-                known_indices.append(j)
-                known_x.append(detections[j][0])
-                known_y.append(detections[j][1])
-
-        # Need at least 3 known positions for spline fitting
-        if len(known_indices) < 3:
+        if max_speed is not None and math.hypot(x1 - x0, y1 - y0) > max_speed * frames:
             continue
-
-        k = min(3, len(known_indices) - 1)  # spline degree
-        try:
-            spline_x = UnivariateSpline(known_indices, known_x, k=k, s=0)
-            spline_y = UnivariateSpline(known_indices, known_y, k=k, s=0)
-            interp_x = float(spline_x(i))
-            interp_y = float(spline_y(i))
-            result[i] = (interp_x, interp_y)
-        except Exception:
-            # Spline fitting can fail with degenerate inputs -- skip
-            continue
-
+        for i in range(before + 1, after):
+            t = (i - before) / frames
+            result[i] = (x0 + t * (x1 - x0), y0 + t * (y1 - y0))
     return result

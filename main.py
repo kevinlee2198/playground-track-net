@@ -19,6 +19,14 @@ from inference.video_preprocess import (
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
+# Gap filling in `infer`: the longest run of missing frames filled, and the
+# fastest the ball may have to move across it, as a share of the frame width per
+# frame. In the tennis and badminton labels (train and validation), 99.9% of ball
+# movement between two labelled frames with at most 4 unlabelled ones between
+# them is under 8.5% of the width per frame, and under 0.1% is over 10%.
+MAX_FILL_GAP = 4
+MAX_FILL_SPEED = 0.10
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -246,7 +254,9 @@ def _track_and_write(
     to the ``args.output`` CSV and, if asked, draw them on ``args.output_video``."""
     # 5. Trajectory rectification
     positions = [(d[0], d[1]) if d is not None else None for d in all_detections]
-    rectified = trajectory_rectification(positions, window=8)
+    rectified = trajectory_rectification(
+        positions, max_gap=MAX_FILL_GAP, max_speed=MAX_FILL_SPEED * info.width
+    )
 
     # 6. Kalman smoothing
     tracker = KalmanBallTracker()

@@ -1,3 +1,4 @@
+import math
 import subprocess
 import sys
 
@@ -261,74 +262,128 @@ class TestHeatmapToCoordinates:
 
 
 class TestTrajectoryRectification:
-    def test_fills_single_gap(self):
-        """Interpolate a single missing frame in a linear trajectory."""
-        detections = [
-            (100.0, 100.0),  # frame 0
-            (110.0, 105.0),  # frame 1
-            None,  # frame 2 -- gap
-            (130.0, 115.0),  # frame 3
-            (140.0, 120.0),  # frame 4
-        ]
-        result = trajectory_rectification(detections, window=8)
-        assert result[2] is not None
-        x, y = result[2]
-        # Should be approximately (120, 110) for a linear trajectory
-        assert abs(x - 120.0) < 5.0
-        assert abs(y - 110.0) < 5.0
-
-    def test_does_not_fill_without_enough_context(self):
-        """Don't interpolate if fewer than 3 known positions in window."""
-        detections = [
-            None,
-            (100.0, 100.0),
-            None,
-            None,
-            (120.0, 110.0),
-            None,
-            None,
-            None,
-        ]
-        result = trajectory_rectification(detections, window=4)
-        # Some gaps may not be filled if insufficient context
-        # The key requirement: need >= 3 known positions in the window
-        filled_count = sum(1 for d in result if d is not None)
-        known_count = sum(1 for d in detections if d is not None)
-        # Should fill some but not fabricate without evidence
-        assert filled_count >= known_count
-
-    def test_preserves_existing_detections(self):
-        """Known detections must not be modified."""
-        detections = [
-            (100.0, 100.0),
-            (110.0, 105.0),
-            (120.0, 110.0),
-        ]
-        result = trajectory_rectification(detections, window=8)
-        for i in range(3):
-            assert result[i] == detections[i]
-
-    def test_all_none_returns_all_none(self):
-        """No detections at all -- nothing to interpolate."""
+    def test_no_detections_or_no_frames(self):
+        assert trajectory_rectification([]) == []
         detections = [None, None, None, None]
-        result = trajectory_rectification(detections, window=8)
-        assert all(d is None for d in result)
+        assert trajectory_rectification(detections) == detections
 
-    def test_fills_multi_frame_gap(self):
-        """Fill a 2-frame gap in a parabolic trajectory."""
-        detections = [
-            (100.0, 200.0),
-            (110.0, 190.0),
-            (120.0, 182.0),
-            None,  # gap
-            None,  # gap
-            (150.0, 172.0),
-            (160.0, 170.0),
-            (170.0, 170.0),
+    def test_takes_a_tuple_and_returns_a_list(self):
+        detections = ((0.0, 0.0), None, (10.0, 20.0))
+        assert trajectory_rectification(detections) == [
+            (0.0, 0.0),
+            (5.0, 10.0),
+            (10.0, 20.0),
         ]
-        result = trajectory_rectification(detections, window=8)
-        assert result[3] is not None
-        assert result[4] is not None
+
+    def test_never_fills_before_the_first_or_after_the_last_detection(self):
+        path = [(100.0 + 30 * t, 500.0 - 40 * t + 6 * t * t) for t in range(4)]
+        detections = [None, None, *path, None, None]
+        assert trajectory_rectification(detections) == detections
+
+    @pytest.mark.parametrize("max_gap", [0, 1, 4])
+    def test_fills_a_gap_of_max_gap_frames_but_not_a_longer_one(self, max_gap):
+        """A gap of ``max_gap`` frames is filled whole. A gap one frame longer
+        is not filled at all, not even the frames next to a detection."""
+        frames = max_gap + 1
+        short = [(0.0, 0.0), *[None] * max_gap, (10.0 * frames, 20.0 * frames)]
+        assert trajectory_rectification(short, max_gap=max_gap) == [
+            pytest.approx((10.0 * t, 20.0 * t)) for t in range(frames + 1)
+        ]
+        too_long = [(0.0, 0.0), *[None] * (max_gap + 1), (60.0, 60.0)]
+        assert trajectory_rectification(too_long, max_gap=max_gap) == too_long
+
+    def test_fills_a_gap_only_if_the_ball_need_not_move_faster_than_max_speed(self):
+        """Two missing frames between detections 30 px apart (a 3-4-5 triangle):
+        10 px per frame. A gap just under a limit of 10 px per frame is filled
+        whole, one just over is not filled at all; with no limit both are."""
+
+        def gap(scale: float) -> list[tuple[float, float] | None]:
+            return [(0.0, 0.0), None, None, (18.0 * scale, 24.0 * scale)]
+
+        def line(scale: float) -> list:
+            return [pytest.approx((6.0 * scale * t, 8.0 * scale * t)) for t in range(4)]
+
+        under, over = gap(0.999), gap(1.001)
+        assert trajectory_rectification(under, max_speed=10.0) == line(0.999)
+        assert trajectory_rectification(over, max_speed=10.0) == over
+        assert trajectory_rectification(over, max_speed=None) == line(1.001)
+
+    def test_fills_between_detections_accurately_on_a_parabola(self):
+        """A ball arc (constant vertical acceleration a = 1 px per frame squared)
+        with gaps of one, two and four frames. For detections L frames apart
+        (L - 1 missing between them), the straight line misses the arc k frames
+        after the first by a * k * (L - k) / 2: at most 0.5, 1 and 3 px here."""
+
+        def ball(t: int) -> tuple[float, float]:
+            return (100.0 + 12.0 * t, 500.0 - 30.0 * t + 0.5 * t * t)
+
+        n = 16
+        gaps = {3, 7, 8, 11, 12, 13, 14}
+        detections = [None if t in gaps else ball(t) for t in range(n)]
+        result = trajectory_rectification(detections)
+        for t in range(n):
+            pos = result[t]
+            assert pos is not None
+            if t not in gaps:
+                assert pos == detections[t]
+                continue
+            x, y = pos
+            assert x == pytest.approx(ball(t)[0])
+            tolerance = 1.0 if t == 3 else 4.0
+            assert abs(y - ball(t)[1]) < tolerance
+
+    def test_fills_exactly_the_short_slow_gaps_on_the_line(self):
+        """Random detection patterns with positions anywhere (as clutter gives).
+        For every missing frame, take the nearest detection on each side in the
+        input. A filled frame has both, at most ``max_gap`` missing frames
+        between them, a speed between them of at most ``max_speed`` and lies on
+        the straight line between them; a frame that meets all of that is
+        filled. Detections are returned unchanged."""
+        rng = np.random.default_rng(0)
+        filled = too_fast = 0
+        for _ in range(300):
+            n = int(rng.integers(0, 40))
+            max_gap = int(rng.integers(0, 6))
+            max_speed = [None, 20.0, 100.0, 300.0][int(rng.integers(4))]
+            p_detected = rng.uniform(0.2, 0.9)
+            detections: list[tuple[float, float] | None] = [
+                (float(rng.uniform(0, 1000)), float(rng.uniform(0, 1000)))
+                if rng.random() < p_detected
+                else None
+                for _ in range(n)
+            ]
+            result = trajectory_rectification(
+                detections, max_gap=max_gap, max_speed=max_speed
+            )
+            assert len(result) == n
+            known = {j: d for j, d in enumerate(detections) if d is not None}
+            for i, pos in enumerate(result):
+                if i in known:
+                    assert pos == known[i]
+                    continue
+                before = max((j for j in known if j < i), default=None)
+                after = min((j for j in known if j > i), default=None)
+                if before is None or after is None:
+                    assert pos is None, f"frame {i} extrapolated"
+                    continue
+                x0, y0 = known[before]
+                x1, y1 = known[after]
+                frames = after - before
+                speed = math.hypot(x1 - x0, y1 - y0) / frames
+                short = frames - 1 <= max_gap
+                slow = max_speed is None or speed <= max_speed
+                too_fast += short and not slow
+                if pos is None:
+                    assert not (short and slow), f"frame {i} left unfilled"
+                    continue
+                filled += 1
+                assert short, f"frame {i} filled in a gap of {frames - 1}"
+                assert slow, f"frame {i} filled at {speed:.1f} px per frame"
+                t = (i - before) / frames
+                assert pos == pytest.approx((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
+        # The patterns do exercise filling and the speed limit.
+        assert filled > 100
+        assert too_fast > 100
 
 
 class TestDrawBallOnFrame:
