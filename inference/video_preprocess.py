@@ -186,19 +186,11 @@ def extract_frames(source: str) -> tuple[list[np.ndarray], dict]:
 
 
 def _extract_from_directory(directory: Path) -> tuple[list[np.ndarray], dict]:
-    extensions = {".png", ".jpg", ".jpeg", ".bmp"}
-    image_files = sorted(
-        f for f in directory.iterdir() if f.suffix.lower() in extensions
-    )
-    if not image_files:
-        raise ValueError(f"No image files found in {directory}")
-
+    image_files = _image_files(directory)
     frames = []
     metadata = {}
     for i, img_path in enumerate(image_files):
-        frame = cv2.imread(str(img_path))
-        if frame is None:
-            raise ValueError(f"Failed to read image: {img_path}")
+        frame = _read_image(img_path)
         if i == 0:
             h, w = frame.shape[:2]
             metadata = {
@@ -211,10 +203,7 @@ def _extract_from_directory(directory: Path) -> tuple[list[np.ndarray], dict]:
 
 
 def _extract_from_video(video_path: Path) -> tuple[list[np.ndarray], dict]:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise ValueError(f"Failed to open video: {video_path}")
-
+    cap = _open_video(video_path)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

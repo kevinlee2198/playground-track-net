@@ -113,6 +113,32 @@ def write_badminton_video(path: Path, num_frames: int) -> None:
     writer.release()
 
 
+def write_badminton_labels(
+    path: Path, rows: list[tuple[int, int, int, int]] = BADMINTON_LABEL_ROWS
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Frame", "Visibility", "X", "Y"])
+        writer.writerows(rows)
+
+
+@pytest.fixture
+def badminton_root(tmp_path: Path) -> Path:
+    """Create a miniature CoachAI badminton dataset, before frame extraction:
+    <part>/<match>/video/<rally>.mp4 and <part>/<match>/csv/<rally>_ball.csv.
+
+    Every rally has the six label rows of ``BADMINTON_LABEL_ROWS``; its video
+    has the number of frames ``BADMINTON_RALLIES`` gives.
+    """
+    root = tmp_path / "badminton"
+    for rally, num_frames in BADMINTON_RALLIES.items():
+        match, name = rally.rsplit("/", 1)
+        write_badminton_video(root / match / "video" / f"{name}.mp4", num_frames)
+        write_badminton_labels(root / match / "csv" / f"{name}_ball.csv")
+    return root
+
+
 CLIP_SIZE = (160, 90)  # width, height of write_moving_square_clip's frames
 
 
@@ -199,29 +225,3 @@ def spy_on_video_capture(
 
     monkeypatch.setattr(cv2, "VideoCapture", SpyCapture)
     return stats
-
-
-def write_badminton_labels(
-    path: Path, rows: list[tuple[int, int, int, int]] = BADMINTON_LABEL_ROWS
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Frame", "Visibility", "X", "Y"])
-        writer.writerows(rows)
-
-
-@pytest.fixture
-def badminton_root(tmp_path: Path) -> Path:
-    """Create a miniature CoachAI badminton dataset, before frame extraction:
-    <part>/<match>/video/<rally>.mp4 and <part>/<match>/csv/<rally>_ball.csv.
-
-    Every rally has the six label rows of ``BADMINTON_LABEL_ROWS``; its video
-    has the number of frames ``BADMINTON_RALLIES`` gives.
-    """
-    root = tmp_path / "badminton"
-    for rally, num_frames in BADMINTON_RALLIES.items():
-        match, name = rally.rsplit("/", 1)
-        write_badminton_video(root / match / "video" / f"{name}.mp4", num_frames)
-        write_badminton_labels(root / match / "csv" / f"{name}_ball.csv")
-    return root
