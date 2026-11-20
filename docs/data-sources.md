@@ -102,7 +102,7 @@ The dataset ships videos, and training reads frame images, so decode them once:
 uv run python main.py extract-frames --root datasets/badminton
 ```
 
-It writes `<part>/<match>/frames/<rally>/NNNN.jpg` for every label row of every part, `Test` included (source resolution, JPEG quality 95 unless `--jpeg-quality` says otherwise), drops surplus trailing video frames, warns about any rally whose container frame count differs from the frames decoded, and logs a summary. It is safe to interrupt and re-run: rallies already extracted are skipped. Do not run two extractions on the same root at once: the second removes the first's temporary directory. `train` and `evaluate --split val` need only the `Professional` and `Amateur` frames; `check-data`, which builds all three splits, also needs `Test`. Then run `check-data --config configs/badminton_v2.yaml` (see the README).
+It writes `<part>/<match>/frames/<rally>/NNNN.jpg` for every label row of every part, `Test` included (source resolution, JPEG quality 95 unless `--jpeg-quality` says otherwise), drops surplus trailing video frames, warns about any rally whose container frame count differs from the frames decoded, and logs a summary. It is safe to interrupt and re-run: rallies already extracted are skipped. Do not run two extractions on the same root at once: the second removes the first's temporary directory. `train` and `evaluate --split val` need only the `Professional` and `Amateur` frames; `check-data` builds train and val, and needs `Test` too only with the owner's `--final`. Then run `check-data --config configs/badminton_v2.yaml` (see the README).
 
 ## Multi-sport — RacketVision (released 2026-04-11)
 

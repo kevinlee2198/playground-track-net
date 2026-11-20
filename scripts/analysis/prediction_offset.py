@@ -7,13 +7,15 @@ label in model-resolution pixels; detections more than 10 px from the label
 are left out.
 
 Usage, from the repo root:
-    PYTHONPATH=. uv run python scripts/analysis/prediction_offset.py \
+    PYTHONPATH=. scripts/capped.sh uv run python scripts/analysis/prediction_offset.py \
         configs/default.yaml checkpoints/<run>/best.pt <train|val> <every_nth_window>
+
+The test split is refused unless ``--final`` is given (see ``require_final``).
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 from collections import defaultdict
 
 import numpy as np
@@ -28,7 +30,13 @@ from data import (
 )
 from models import load_model
 from training.evaluate import heatmap_to_position
-from training.run import checkpoint_background, load_config
+from training.run import (
+    HeldOutSplitError,
+    checkpoint_background,
+    load_config,
+    require_final,
+    require_held_out_in_test,
+)
 
 NEAR_PX = 10.0
 
@@ -42,11 +50,25 @@ def format_offsets(offsets: list[tuple[float, float]], mirrored: bool) -> str:
 
 
 def main() -> None:
-    config_path, weights, split, nth = sys.argv[1:5]
-    config = load_config(config_path)
+    parser = argparse.ArgumentParser(description="Mean prediction offset on one split")
+    parser.add_argument("config_path")
+    parser.add_argument("weights")
+    parser.add_argument("split", choices=["train", "val", "test"])
+    parser.add_argument("nth", type=int, help="score every nth window")
+    parser.add_argument("--final", action="store_true", help="allow the test split")
+    args = parser.parse_args()
+    weights, split = args.weights, args.split
+    try:
+        require_final(split, args.final)
+        config = load_config(args.config_path)
+        data = config["data"]
+        splits = split_clips(
+            discover_clips(data), data["val_groups"], data["test_groups"]
+        )
+        require_held_out_in_test(splits, (split,), args.final)
+    except HeldOutSplitError as err:
+        raise SystemExit(f"prediction_offset.py: {err}") from None
     width, height = config["input_size"]
-    data = config["data"]
-    splits = split_clips(discover_clips(data), data["val_groups"], data["test_groups"])
     clips = splits[split]
     require_frames(clips)  # as build_dataset would: the clips are built directly
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,7 +89,7 @@ def main() -> None:
             background=background,
         )
         source_width, source_height = clip.source_size
-        for window in range(0, len(clip), int(nth)):
+        for window in range(0, len(clip), args.nth):
             frames, _targets = clip[window]
             start = clip.window_starts[window]
             for mirrored in (False, True):
