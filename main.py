@@ -75,14 +75,19 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument(
         "--split",
         choices=["val", "test"],
-        default="test",
-        help="Split to evaluate (default: test)",
+        default="val",
+        help="Split to evaluate (default: val; test needs --final)",
+    )
+    eval_parser.add_argument(
+        "--final",
+        action="store_true",
+        help="The model is final: allow the held-out test split (the owner's call)",
     )
 
     # Check-data subcommand
     check_parser = subparsers.add_parser(
         "check-data",
-        help="Draw labels on sample frames of every split and log label counts",
+        help="Draw labels on sample frames of train and val and log label counts",
     )
     check_parser.add_argument(
         "--config",
@@ -100,7 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--count",
         type=int,
         default=12,
-        help="Number of overlays, spread across train, val and test (default: 12)",
+        help="Number of overlays, spread across the splits (default: 12)",
+    )
+    check_parser.add_argument(
+        "--final",
+        action="store_true",
+        help="The model is final: cover the held-out test split too (the owner's call)",
     )
 
     # Extract-frames subcommand
@@ -152,6 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.5,
         help="Heatmap detection threshold (default: 0.5)",
+    )
+    infer_parser.add_argument(
+        "--final",
+        action="store_true",
+        help="The model is final: allow a held-out test video (the owner's call)",
     )
 
     return parser
@@ -345,6 +360,12 @@ def main():
         logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
     if args.command == "infer":
+        from training.run import HeldOutSplitError, require_final_for_path
+
+        try:
+            require_final_for_path(args.video, args.final)
+        except HeldOutSplitError as err:
+            raise SystemExit(f"infer: {err}") from None
         run_inference(args)
     elif args.command == "train":
         from training.run import load_config, run_training
@@ -354,14 +375,26 @@ def main():
             config["max_steps"] = args.max_steps
         run_training(config, resume=args.resume)
     elif args.command == "evaluate":
-        from training.run import load_config, run_evaluation
+        from training.run import (
+            HeldOutSplitError,
+            load_config,
+            require_final,
+            run_evaluation,
+        )
 
-        result = run_evaluation(load_config(args.config), args.weights, args.split)
+        try:
+            require_final(args.split, args.final)
+        except HeldOutSplitError as err:
+            raise SystemExit(f"evaluate: {err}") from None
+        config = load_config(args.config)
+        result = run_evaluation(config, args.weights, args.split, final=args.final)
         print(json.dumps(result, indent=2))
     elif args.command == "check-data":
         from training.run import load_config, write_label_overlays
 
-        paths = write_label_overlays(load_config(args.config), args.out, args.count)
+        paths = write_label_overlays(
+            load_config(args.config), args.out, args.count, final=args.final
+        )
         print(f"Wrote {len(paths)} overlays to {args.out}")
     elif args.command == "extract-frames":
         from data import extract_badminton_frames

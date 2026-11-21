@@ -105,7 +105,7 @@ def test_train_evaluate_infer_roundtrip(tennis_root, tmp_path, background):
     ckpt = tmp_path / "checkpoints" / "e2e" / "latest.pt"
     assert ckpt.exists()
 
-    result = run_evaluation(config, ckpt, split="test")
+    result = run_evaluation(config, ckpt, split="test", final=True)
     assert result["frames"] == 6
     for protocol in ("model_res_4px", "source_res_4px"):
         m = result[protocol]
@@ -953,13 +953,13 @@ def test_evaluation_rejects_mixed_source_sizes(tennis_root, tmp_path):
         cv2.imwrite(str(frame), np.zeros((360, 640, 3), dtype=np.uint8))
     config = _config_for(tennis_root, val_groups=[], test_groups=["game2", "game3"])
     with pytest.raises(ValueError, match="source size"):
-        run_evaluation(config, _default_weights(tmp_path), split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test", final=True)
 
 
 def test_evaluation_rejects_aspect_ratio_change(tennis_root, tmp_path):
     config = _config_for(tennis_root) | {"input_size": [128, 128]}
     with pytest.raises(ValueError, match="aspect ratio"):
-        run_evaluation(config, _default_weights(tmp_path), split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test", final=True)
 
 
 def test_source_resolution_threshold_is_4px_of_the_source(tennis_root):
@@ -1005,7 +1005,7 @@ def test_evaluation_protocols_disagree_between_their_thresholds(
     torch.save(_BallOffBy3pxModel().state_dict(), weights)
     config = _config_for(tennis_root) | {"num_workers": 0, "pin_memory": False}
 
-    result = run_evaluation(config, weights, split="test")
+    result = run_evaluation(config, weights, split="test", final=True)
     assert (result["model_res_4px"]["tp"], result["model_res_4px"]["fp1"]) == (6, 0)
     assert (result["source_res_4px"]["tp"], result["source_res_4px"]["fp1"]) == (0, 6)
 
@@ -1026,18 +1026,18 @@ VISIBLE_STEMS = {"0000", "0001", "0002", "0005"}  # visibility 1 or 2 in the fix
 
 
 def test_label_overlays_cover_every_split(tennis_root, tmp_path):
-    paths = write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+    paths = write_label_overlays(_config_for(tennis_root), tmp_path, 3, final=True)
     assert [p.name.split("_")[0] for p in paths] == ["train", "val", "test"]
 
 
 def test_label_overlays_show_only_visible_frames(tennis_root, tmp_path):
-    paths = write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
+    paths = write_label_overlays(_config_for(tennis_root), tmp_path, 100, final=True)
     assert len(paths) == 16  # every visible frame of the four clips, no more
     assert {p.stem.rsplit("_", 1)[1] for p in paths} == VISIBLE_STEMS
 
 
 def test_label_overlay_marker_at_rescaled_position(tennis_root, tmp_path):
-    write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
+    write_label_overlays(_config_for(tennis_root), tmp_path, 100, final=True)
     # Frame 0000 is labelled at (640, 360) on a 1280x720 frame and is uniform black.
     # That maps to (255.7, 143.7) at 512x288, so the frame marker is centred on
     # the nearest pixel (256, 144).
@@ -1071,7 +1071,7 @@ def _move_test_label(tennis_root, x, y):
 
 def test_label_overlay_crop_stays_centred_at_frame_edge(tennis_root, tmp_path):
     _move_test_label(tennis_root, 0, 0)
-    write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
+    write_label_overlays(_config_for(tennis_root), tmp_path, 100, final=True)
     img = cv2.imread(str(tmp_path / "test_game3_Clip1_0001.png"))
     assert img is not None
     enlarged = img[:256, 512:]
@@ -1082,7 +1082,7 @@ def test_label_overlay_crop_stays_centred_at_frame_edge(tennis_root, tmp_path):
 
 def test_label_overlays_log_split_counts(tennis_root, tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="training.run"):
-        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+        write_label_overlays(_config_for(tennis_root), tmp_path, 3, final=True)
     log = caplog.text
     assert "train: 2 clips, 12 frames, visibility {0: 2, 1: 6, 2: 2, 3: 2}" in log
     assert "test: 1 clips, 6 frames, visibility {0: 1, 1: 3, 2: 1, 3: 1}" in log
@@ -1091,7 +1091,9 @@ def test_label_overlays_log_split_counts(tennis_root, tmp_path, caplog):
 def test_label_overlay_drawn_for_label_outside_frame(tennis_root, tmp_path, caplog):
     label_path = _move_test_label(tennis_root, 1400, 355)  # frame is 1280 wide
     with caplog.at_level(logging.INFO, logger="training.run"):
-        paths = write_label_overlays(_config_for(tennis_root), tmp_path, count=100)
+        paths = write_label_overlays(
+            _config_for(tennis_root), tmp_path, 100, final=True
+        )
     path = tmp_path / "test_game3_Clip1_0001.png"
     assert path in paths
     img = cv2.imread(str(path))
@@ -1111,7 +1113,7 @@ def test_label_overlays_count_visible_labels_outside_frame(
     # count=3 draws frame 0002 of the test clip, not the moved frame 0001: the
     # count covers every label row, not only those drawn.
     with caplog.at_level(logging.INFO, logger="training.run"):
-        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+        write_label_overlays(_config_for(tennis_root), tmp_path, 3, final=True)
     for split, outside in (("train", 0), ("val", 0), ("test", 1)):
         line = rf"{split}: \d+ clips, .*, {outside} visible labels outside the frame"
         assert re.search(line, caplog.text), (split, caplog.text)
@@ -1138,7 +1140,7 @@ def test_check_data_reports_no_frame_gaps_in_consecutive_clips(
     tennis_root, tmp_path, caplog
 ):
     with caplog.at_level(logging.INFO, logger="training.run"):
-        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+        write_label_overlays(_config_for(tennis_root), tmp_path, 3, final=True)
     for split in ("train", "val", "test"):
         assert re.search(_gap_line(split, 0), caplog.text), (split, caplog.text)
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
@@ -1148,7 +1150,7 @@ def test_check_data_reports_clip_with_frame_gap(tennis_root, tmp_path, caplog):
     clip_dir = tennis_root / "game3" / "Clip1"
     _remove_frame(clip_dir, "0003")  # frames 0, 1, 2, 4, 5
     with caplog.at_level(logging.INFO, logger="training.run"):
-        write_label_overlays(_config_for(tennis_root), tmp_path, count=3)
+        write_label_overlays(_config_for(tennis_root), tmp_path, 3, final=True)
     assert re.search(_gap_line("test", 1), caplog.text), caplog.text
     assert re.search(_gap_line("train", 0), caplog.text), caplog.text
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
@@ -1178,13 +1180,13 @@ def test_training_rejects_empty_val_split(tennis_root, tmp_path):
 def test_evaluation_rejects_empty_split(tennis_root, tmp_path):
     config = _config_for(tennis_root, test_groups=[])
     with pytest.raises(ValueError, match=r"test split.*data\.test_groups"):
-        run_evaluation(config, _default_weights(tmp_path), split="test")
+        run_evaluation(config, _default_weights(tmp_path), split="test", final=True)
 
 
 def test_check_data_skips_empty_split(tennis_root, tmp_path, caplog):
     config = _config_for(tennis_root, test_groups=[])
     with caplog.at_level(logging.INFO, logger="training.run"):
-        paths = write_label_overlays(config, tmp_path, count=3)
+        paths = write_label_overlays(config, tmp_path, count=3, final=True)
     assert "test: no clips, skipped" in caplog.text
     assert len(paths) == 3
     assert {p.name.split("_")[0] for p in paths} == {"train", "val"}
@@ -1225,7 +1227,7 @@ def test_badminton_extract_check_data_train_evaluate(badminton_root, tmp_path, c
     }
 
     with caplog.at_level(logging.INFO, logger="training.run"):
-        paths = write_label_overlays(config, tmp_path / "overlays", count=3)
+        paths = write_label_overlays(config, tmp_path / "overlays", 3, final=True)
     # The middle visible frame of each split; train's is in its second rally.
     assert [p.name for p in paths] == [
         "train_Professional-match2_1_01_10_0003.png",

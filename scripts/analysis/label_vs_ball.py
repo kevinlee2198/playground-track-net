@@ -12,12 +12,16 @@ labels) and its distance from the frame centre, per axis: the constant is the
 offset of a still ball at the centre of the frame.
 
 Usage, from the repo root (reads only the dataset):
-    .venv/bin/python -I scripts/analysis/label_vs_ball.py datasets/tennis game1 [game2 ...]
+    scripts/capped.sh .venv/bin/python -I scripts/analysis/label_vs_ball.py datasets/tennis game1 [game2 ...]
+
+The held-out test data (tennis game8-game10, the badminton Test part) is
+refused unless ``--final`` is given.
 """
 
 from __future__ import annotations
 
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -32,6 +36,9 @@ DIFF_THRESHOLD = 30
 MIN_BLOB, MAX_BLOB = 6, 200
 MAX_OFFSET = 8.0
 MOVING = 3.0  # px per frame
+# The held-out test data, as HELD_OUT_GAMES and HELD_OUT_PART in
+# training/run.py (not imported: this script runs with python -I).
+HELD_OUT_NAMES = {"game8", "game9", "game10", "Test"}
 
 
 def measure_clip(clip: Path) -> list[tuple[float, ...]]:
@@ -124,15 +131,27 @@ def report(game: str, values: np.ndarray) -> None:
 
 
 def main() -> None:
-    root = Path(sys.argv[1])
-    for game in sys.argv[2:]:
+    args = sys.argv[1:]
+    final = "--final" in args
+    root, *games = [a for a in args if a != "--final"]
+    for game in games:
+        parts = Path(os.path.normpath(Path(root) / game)).parts
+        if HELD_OUT_NAMES.intersection(parts) and not final:
+            sys.exit(
+                f"label_vs_ball.py: {game} is in the held-out test split until the "
+                "model is final: pass --final once the owner has decided it is"
+            )
+    for game in games:
         measured = [
             row
-            for clip in sorted((root / game).iterdir())
+            for clip in sorted((Path(root) / game).iterdir())
             if (clip / "Label.csv").exists()
             for row in measure_clip(clip)
         ]
-        report(game, np.array(measured))
+        if measured:
+            report(game, np.array(measured))
+        else:
+            print(f"{game}: no frame measured")
 
 
 if __name__ == "__main__":

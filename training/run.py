@@ -16,6 +16,7 @@ import yaml
 from torch.utils.data import ConcatDataset, DataLoader
 
 from data import (
+    Clip,
     Compose,
     FrameColorJitter,
     HorizontalFlip,
@@ -35,6 +36,92 @@ logger = logging.getLogger(__name__)
 
 EVAL_STRIDE = 3  # validation and test score each frame once
 DISTANCE_PX = 4.0  # true-positive distance of both evaluation protocols
+HELD_OUT_SPLIT = "test"
+# The held-out test data, by group: tennis game8-game10 and every badminton
+# group in the Test part. .claude/hooks/held_out.py keeps its own copy (the
+# hooks cannot import the project); scripts/analysis/label_vs_ball.py too
+# (it runs with python -I, outside the project).
+HELD_OUT_GAMES = ("game8", "game9", "game10")
+HELD_OUT_PART = "Test"
+
+
+class HeldOutSplitError(ValueError):
+    """The held-out split was asked for without ``final``."""
+
+
+def require_final(split: str, final: bool) -> None:
+    """Refuse the held-out test split unless ``final`` is set.
+
+    Every entry point that can read a split calls this before it loads
+    anything. ``final`` (``--final`` on the command line) is the owner's
+    decision that the model is final.
+
+    Raises:
+        HeldOutSplitError: If ``split`` is the test split and ``final`` is false.
+    """
+    if split == HELD_OUT_SPLIT and not final:
+        raise HeldOutSplitError(
+            f"the {split} split is held out until the model is final: use "
+            "--split val, or pass --final once the owner has decided the model "
+            "is final"
+        )
+
+
+def require_final_for_path(path: str | Path, final: bool) -> None:
+    """Refuse a path into the held-out test data unless ``final`` is set.
+
+    The held-out data is any ``tennis/<game in HELD_OUT_GAMES>`` or
+    ``badminton/<HELD_OUT_PART>`` in the resolved path, wherever it lies.
+
+    Raises:
+        HeldOutSplitError: If ``path`` lies in held-out data and ``final`` is
+            false.
+    """
+    parts = Path(path).resolve().parts
+    held_out = any(
+        (sport == "tennis" and part in HELD_OUT_GAMES)
+        or (sport == "badminton" and part == HELD_OUT_PART)
+        for sport, part in zip(parts, parts[1:])
+    )
+    if held_out and not final:
+        raise HeldOutSplitError(
+            f"{path} is held-out test data, which stays unread until the model is "
+            "final: use a train or val video, or pass --final once the owner has "
+            "decided the model is final"
+        )
+
+
+def is_held_out_group(group: str) -> bool:
+    """Whether ``group`` is held-out test data, whatever a config's splits say."""
+    return group in HELD_OUT_GAMES or group.split("/", 1)[0] == HELD_OUT_PART
+
+
+def require_held_out_in_test(
+    splits: dict[str, list[Clip]], built: Sequence[str], final: bool
+) -> None:
+    """Refuse held-out groups in a train or val split being built, unless ``final``.
+
+    ``split_clips`` puts every group the config does not name in train, so a
+    config that leaves a held-out game out of ``data.test_groups`` (or names
+    it in ``data.val_groups``) would train or validate on it.
+
+    Raises:
+        HeldOutSplitError: If a split in ``built`` other than test holds a
+            group ``is_held_out_group`` names and ``final`` is false.
+    """
+    if final:
+        return
+    for split in built:
+        if split == HELD_OUT_SPLIT:
+            continue
+        leaked = sorted({c.group for c in splits[split] if is_held_out_group(c.group)})
+        if leaked:
+            raise HeldOutSplitError(
+                f"the {split} split holds held-out test data ({', '.join(leaked)}), "
+                "which stays unread until the model is final: name it in "
+                "data.test_groups, or pass --final (evaluate, check-data) once the "
+                "owner has decided the model is final"
+            )
 
 
 def load_config(path: str | Path) -> dict:
@@ -77,7 +164,7 @@ def _merge(base: dict, override: dict) -> dict:
 
 
 def _build_datasets(
-    config: dict, splits: Sequence[str], skip_empty: bool = False
+    config: dict, splits: Sequence[str], skip_empty: bool = False, final: bool = False
 ) -> dict[str, ConcatDataset]:
     """Datasets for the named splits ("train", "val", "test") of ``config["data"]``.
 
@@ -89,6 +176,8 @@ def _build_datasets(
     the result.
 
     Raises:
+        HeldOutSplitError: As ``require_held_out_in_test`` raises it, before
+            any clip is read.
         ValueError: If ``data.format`` is not supported, or a split has no
             clips and ``skip_empty`` is false.
         FileNotFoundError: If a clip of a split being built has no frames
@@ -97,6 +186,7 @@ def _build_datasets(
     """
     data = config["data"]
     clips = split_clips(discover_clips(data), data["val_groups"], data["test_groups"])
+    require_held_out_in_test(clips, splits, final)
     width, height = config["input_size"]
     datasets = {}
     for split in splits:
@@ -151,6 +241,8 @@ def run_training(config: dict, resume: str | Path | None = None) -> None:
             would overwrite it. This includes another checkpoint of this
             experiment, such as its ``best.pt``.
         All are checked before anything is built or written.
+        HeldOutSplitError: If the config puts held-out test data in train or
+            val (see ``require_held_out_in_test``), before any clip is read.
     """
     if resume is not None and not Path(resume).is_file():
         if Path(resume).is_dir():
@@ -288,8 +380,12 @@ def checkpoint_background(
     return trained
 
 
-def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
+def run_evaluation(
+    config: dict, weights: str | Path, split: str, final: bool = False
+) -> dict:
     """Evaluate ``weights`` on the "val" or "test" split under two protocols.
+
+    The test split needs ``final`` (see ``require_final``).
 
     Both count a detection within 4 px of the label as a true positive:
     ``model_res_4px`` measures in heatmap pixels at model resolution,
@@ -305,13 +401,18 @@ def run_evaluation(config: dict, weights: str | Path, split: str) -> dict:
         returns it.
 
     Raises:
+        HeldOutSplitError: As ``require_final`` raises it, before anything is
+            loaded.
         ValueError: If the split's clips differ in source size or the resize
             to ``input_size`` changes their aspect ratio.
     """
+    require_final(split, final)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, stored = load_model(weights, device)
     background = checkpoint_background(config, stored, weights)
-    datasets = _build_datasets(config | {"background_frame": background}, (split,))
+    datasets = _build_datasets(
+        config | {"background_frame": background}, (split,), final=final
+    )
     dataset = datasets[split]
     width, height = config["input_size"]
     distances = {
@@ -347,20 +448,22 @@ CROP_ZOOM = 4
 
 
 def write_label_overlays(
-    config: dict, out_dir: str | Path, count: int = 12
+    config: dict, out_dir: str | Path, count: int = 12, final: bool = False
 ) -> list[Path]:
     """Write PNGs of visible-ball labels drawn on their frames, for a human to check.
 
+    Covers the train and val splits, and the test split too only with
+    ``final`` (see ``require_final``); without it the test split is never built.
     The datasets are built as for training, so a clip that would break training
     raises here with the same error. The one exception: no background frame is
     computed, so a frame that only the background would fail to read is not
-    caught. ``count`` visible-ball frames are shared out across the train, val
-    and test splits in turn (each split gets one before any gets two) and evenly
-    spaced within each split; if the splits hold fewer, all of them are written. Each PNG shows the frame at model resolution
-    with a hollow circle at the rescaled label, beside a 4x enlargement of the
-    64x64 region centred on the label. Files are named
-    ``<split>_<group>_<clip>_<frame>.png``, with any ``/`` in the group (a
-    badminton ``<part>/<match>``) written as ``-``.
+    caught. ``count`` visible-ball frames are shared out across the splits in
+    turn (each split gets one before any gets two) and evenly spaced within
+    each split; if the splits hold fewer, all of them are written. Each PNG
+    shows the frame at model resolution with a hollow circle at the rescaled
+    label, beside a 4x enlargement of the 64x64 region centred on the label.
+    Files are named ``<split>_<group>_<clip>_<frame>.png``, with any ``/`` in
+    the group (a badminton ``<part>/<match>``) written as ``-``.
 
     Logs, per split, the clip count, the frame count, how many label rows
     hold each raw visibility value, how many visible labels lie outside
@@ -369,14 +472,21 @@ def write_label_overlays(
     clips is skipped with a log line.
 
     Returns:
-        The written paths: train first, then val, then test, each in clip and
-        frame order.
+        The written paths: train first, then val, then test (with ``final``),
+        each in clip and frame order.
     """
     candidates: dict[str, list[tuple[TrackNetDataset, int]]] = {}
+    splits = SPLITS
+    if not final:
+        splits = tuple(s for s in SPLITS if s != HELD_OUT_SPLIT)
+        logger.info(
+            "%s: held out until the model is final, skipped (--final includes it)",
+            HELD_OUT_SPLIT,
+        )
     # No background: the counts and overlays never read it, and it decodes up
     # to 50 frames per clip.
     datasets = _build_datasets(
-        config | {"background_frame": False}, SPLITS, skip_empty=True
+        config | {"background_frame": False}, splits, skip_empty=True, final=final
     )
     for split, dataset in datasets.items():
         clips = [cast(TrackNetDataset, d) for d in dataset.datasets]

@@ -5,7 +5,7 @@ of the target disc, which is what ``evaluate`` uses), writes one row per frame
 to a CSV and prints summary tables. Positions are in model-resolution pixels.
 
 Usage, from the repo root:
-    PYTHONPATH=. uv run python scripts/analysis/val_errors.py \
+    PYTHONPATH=. scripts/capped.sh uv run python scripts/analysis/val_errors.py \
         configs/default.yaml checkpoints/<run>/best.pt <out.csv>
 """
 
