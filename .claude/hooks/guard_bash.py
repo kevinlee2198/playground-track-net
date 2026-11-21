@@ -31,9 +31,9 @@ Each simple command is judged on its own:
    only the words before the first one starting with ``-`` are its paths. A
    word with whitespace in it is prose, not a path, except the code given to
    ``python -c``, whose pieces are checked like words.
-2. ``main.py evaluate``, ``main.py check-data``, ``main.py infer``,
-   ``prediction_offset.py`` and ``label_vs_ball.py`` never get ``--final`` or
-   the test split: the owner runs those commands.
+2. ``main.py evaluate``, ``main.py check-data``, ``main.py infer``, ``main.py
+   label``, ``prediction_offset.py`` and ``label_vs_ball.py`` never get
+   ``--final`` or the test split: the owner runs those commands.
 3. The memory cap: Python run through the project environment (``uv run``, an
    interpreter under a ``venv/bin/``, or a bare ``python`` after ``source
    .../bin/activate`` in the same command), ``uv run torchrun``, ``jupyter``
@@ -110,6 +110,7 @@ OWNER_MAIN = {
     "evaluate": "leave --final out and use --split val",
     "check-data": "leave --final out (check-data then covers train and val)",
     "infer": "leave --final out and run it on a video that is not held-out data",
+    "label": "leave --final out and label a video that is not held-out data",
 }
 # Rule 3: exempt from the cap, and what needs it.
 UNCAPPED_MAIN = {"train", "extract-frames"}
@@ -630,7 +631,7 @@ def rough_check(command: str, cwd: str) -> str | None:
         suggestion = f"{wrapper(cwd)} uv run pytest <files> -q"
         return PYTEST_REFUSAL.format(suggestion=suggestion) + UNSPLIT_NOTE
     owner = re.search(
-        r"main\.py\s+(?:evaluate|check-data|infer)|prediction_offset\.py"
+        r"main\.py\s+(?:evaluate|check-data|infer|label)|prediction_offset\.py"
         r"|label_vs_ball\.py",
         command,
     )

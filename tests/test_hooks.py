@@ -153,7 +153,7 @@ HELD_OUT_PATHS = [
     ),
 ]
 
-# Rule 2: main.py evaluate, check-data and infer, prediction_offset.py and
+# Rule 2: main.py evaluate, check-data, infer and label, prediction_offset.py and
 # label_vs_ball.py never get --final (or a prefix of it) or the test split.
 OWNER_ONLY = [
     (
@@ -201,6 +201,12 @@ OWNER_ONLY = [
     ),
     ("scripts/capped.sh uv run python main.py check-data --out /tmp/o --fin", "owner"),
     (
+        "scripts/capped.sh uv run python main.py label --video a.mp4 --out l.csv --final",
+        "label a video that is not held-out data",
+    ),
+    ("scripts/capped.sh uv run python main.py label --video a.mp4 --fi", "owner"),
+    ("scripts/capped.sh uv run python main.py label --video a.mp4 --out l.csv", ALLOW),
+    (
         "PYTHONPATH=. scripts/capped.sh uv run python scripts/analysis/prediction_offset.py"
         " configs/default.yaml w.pt test 5",
         "owner",
@@ -234,6 +240,7 @@ MEMORY_CAP = [
     ("uv run tensorboard --logdir runs", ALLOW),
     ("python -X dev -m pytest tests/", "memory cap"),
     ("uv run python -m main infer --video a.mp4", "memory cap"),
+    ("uv run python main.py label --video a.mp4 --out l.csv", "memory cap"),
     ("uv run ruff check --fix .", ALLOW),
     ("uv run ruff format .", ALLOW),
     ("uv run ty check", ALLOW),
@@ -368,6 +375,10 @@ READING = [
     ("scripts/capped.sh uv run pytest tests/ -n 4 'x", "could not be split"),
     (
         "scripts/capped.sh uv run python main.py evaluate --split test 'x",
+        "could not be split",
+    ),
+    (
+        "scripts/capped.sh uv run python main.py label --video a.mp4 --final 'x",
         "could not be split",
     ),
     ("cat datasets/tennis/game8/Clip1/Label.csv 'x", "could not be split"),
