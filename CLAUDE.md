@@ -9,7 +9,7 @@ Datasets (links, licences, verification log): docs/data-sources.md
 
 ## Commands
 - `uv sync` — install deps
-- `scripts/capped.sh uv run pytest tests/ -q` — run all tests, serially under the memory cap (666 tests, about 95 s)
+- `scripts/capped.sh uv run pytest tests/ -q` — run all tests, serially under the memory cap (721 tests, about 105 s)
 - `uv run ruff format .` — format code
 - `uv run ruff check --fix .` — lint and auto-fix
 - `uv run ty check` — type check (9 pre-existing diagnostics as of 2026-11-20)

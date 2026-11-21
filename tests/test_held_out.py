@@ -98,15 +98,15 @@ def test_check_data_builds_test_split_only_with_final(
 
 
 class _ReachedInference(Exception):
-    """Raised in place of reading the video: the held-out check let infer run."""
+    """Raised in place of running inference: the held-out check let infer run."""
 
 
 def _infer(monkeypatch, video: Path, *extra: str) -> None:
-    def reached(*args, **kwargs):
+    def reached(args):
         raise _ReachedInference
 
-    monkeypatch.setattr("main.extract_frames", reached)
-    monkeypatch.setattr("models.load_model", reached)
+    # run_inference is the first thing to open the video or load the model.
+    monkeypatch.setattr("main.run_inference", reached)
     args = ["infer", "--video", str(video), "--model", "m.pt", "--output", "o.csv"]
     _run_main(monkeypatch, *args, *extra)
 

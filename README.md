@@ -116,7 +116,7 @@ playground-track-net/
 | Guards (test split behind `--final`; Claude Code hooks for held-out paths and the memory cap) | Done | 34 in `test_held_out.py`, 232 in `test_hooks.py` |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 666 tests (about 95 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 721 tests (about 105 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
