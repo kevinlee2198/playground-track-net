@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ball labelling</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd;
+    font: 14px system-ui, sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0 0 var(--bar, 32px) 0; display: flex;
+    align-items: center; justify-content: center; }
+  #view { display: block; cursor: crosshair; }
+  #mag { position: fixed; top: 8px; right: 8px; width: 328px; height: 328px;
+    border: 1px solid #888; background: #222; pointer-events: none; }
+  #status { position: fixed; left: 0; right: 0; bottom: 0; padding: 6px 10px;
+    background: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.error { background: #8b0000; color: #fff; font-weight: bold; }
+  #help { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(20, 20, 20, 0.95); border: 1px solid #666; padding: 12px 20px;
+    max-width: 620px; line-height: 1.5; }
+  #help kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 0 4px; }
+  #help td { padding: 1px 10px 1px 0; vertical-align: top; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="view"></canvas></div>
+<canvas id="mag" width="328" height="328" hidden></canvas>
+<div id="status">Loading…</div>
+<div id="help" hidden>
+  <table>
+    <tr><td>Click</td><td>ball here, visible (1); save and go to the next frame</td></tr>
+    <tr><td><kbd>Shift</kbd>+click</td><td>ball here but hard to see: blurred or partly hidden (2)</td></tr>
+    <tr><td><kbd>N</kbd> or <kbd>Space</kbd></td><td>no ball in the frame (0); next frame</td></tr>
+    <tr><td><kbd>U</kbd></td><td>cannot tell (3, left out when scoring); next frame</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd> or <kbd>A</kbd> <kbd>D</kbd></td><td>previous / next frame, without labelling</td></tr>
+    <tr><td><kbd>Backspace</kbd> or <kbd>Delete</kbd></td><td>clear this frame's label</td></tr>
+    <tr><td><kbd>G</kbd></td><td>go to the first unlabelled frame</td></tr>
+    <tr><td>Hold <kbd>B</kbd></td><td>show the previous frame while held (blink to spot the moving ball)</td></tr>
+    <tr><td><kbd>T</kbd></td><td>hide or show the marks</td></tr>
+    <tr><td><kbd>H</kbd> or <kbd>?</kbd></td><td>this help</td></tr>
+  </table>
+  <p>Ring: this frame's label (green visible, orange hard to see). Faint dots: your
+  labels on the two previous frames. The magnifier shows the area round the cursor
+  8 times enlarged; the click lands where its crosshair meets.</p>
+  <p>A frame takes a label only once it has been on screen for a quarter of a
+  second, and a held key labels one frame only: a click or key that comes too
+  soon saves nothing and says so.</p>
+</div>
+<script src="/label_math.js"></script>
+<script src="/page.js"></script>
+</body>
+</html>

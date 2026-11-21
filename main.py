@@ -169,6 +169,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="The model is final: allow a held-out test video (the owner's call)",
     )
 
+    # Label subcommand
+    label_parser = subparsers.add_parser(
+        "label", help="Label the ball by hand, one click per frame, in a local web page"
+    )
+    label_parser.add_argument(
+        "--video", required=True, help="Video file or directory of frame images"
+    )
+    label_parser.add_argument(
+        "--out", required=True, help="Label CSV to write (resumed if it exists)"
+    )
+    label_parser.add_argument(
+        "--frames-dir",
+        default=None,
+        help="Where a video's frames are decoded (default: <out without suffix>.frames)",
+    )
+    label_parser.add_argument(
+        "--port", type=int, default=8765, help="Port on 127.0.0.1 (default: 8765)"
+    )
+    label_parser.add_argument(
+        "--final",
+        action="store_true",
+        help="Allow a held-out test video (the owner's call)",
+    )
+
     return parser
 
 
@@ -400,6 +424,19 @@ def main():
         from data import extract_badminton_frames
 
         extract_badminton_frames(args.root, jpeg_quality=args.jpeg_quality)
+    elif args.command == "label":
+        from training.run import HeldOutSplitError, require_final_for_path
+
+        try:
+            require_final_for_path(args.video, args.final)
+        except HeldOutSplitError as err:
+            raise SystemExit(f"label: {err}") from None
+        from labeling import run_label_tool
+
+        try:
+            run_label_tool(args.video, args.out, args.frames_dir, args.port)
+        except (ValueError, OSError) as err:  # a refusal, or a file it cannot use
+            raise SystemExit(f"label: {err}") from None
 
 
 if __name__ == "__main__":

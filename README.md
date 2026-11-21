@@ -70,6 +70,11 @@ playground-track-net/
     tracker.py          # KalmanBallTracker (custom NumPy Kalman, no filterpy)
   utils/
     visualization.py    # Ball overlay drawing for annotated video output
+  labeling/
+    frames.py           # The frames to label: an image directory, or a video decoded once to JPEGs
+    store.py            # The label CSV, validated and rewritten atomically after every change
+    server.py           # Local HTTP server (standard library) behind main.py label
+    static/             # index.html and page.js (the labelling page), label_math.js (its pure functions)
   configs/
     default.yaml        # Training config with every key (optimizer, schedule, AMP, paths); flip off
     tennis_v2_baseline.yaml # default.yaml with the horizontal flip on: the first run
@@ -88,7 +93,9 @@ playground-track-net/
     test_inference.py   # Postprocess, tracker, video preprocess, streaming read (62 tests)
     test_pipeline.py    # End to end: train, evaluate, check-data, infer (streaming), badminton extract-frames (77 tests)
     test_held_out.py    # The test split and held-out videos need --final; no held-out game in train or val (34 tests)
-    test_hooks.py       # Guard hooks in .claude/hooks/: held-out paths, --final, memory cap (232 tests)
+    test_hooks.py       # Guard hooks in .claude/hooks/: held-out paths, --final, memory cap (236 tests)
+    test_labeling.py    # Labelling tool: frame preparation, label CSV, HTTP API, main.py label, the page's script via Node (129 tests)
+    js/label_page_test.js # The page's script in a stubbed browser with a fake clock (run by test_labeling.py)
   docs/
     data-sources.md     # Dataset links, licences, verification log
     2026-11-15-pre-training-review.md        # Data, literature and code-readiness review
@@ -96,7 +103,7 @@ playground-track-net/
     2026-04-14-architecture-review-synthesis.md  # Full-product (iOS app) architecture review
     superpowers/specs/  # Design specifications (ball tracker, on-device iOS slice)
     superpowers/plans/  # Implementation plans (V2 model/data/training/inference, V5 sigmoid/MDD/R-STR; 2026-11-15-pre-training-fixes.md)
-  main.py              # CLI: train | evaluate | check-data | extract-frames | infer
+  main.py              # CLI: train | evaluate | check-data | extract-frames | infer | label
 ```
 
 ## Implementation Status
@@ -113,10 +120,11 @@ playground-track-net/
 | Training (trainer, AMP, evaluation, resumable checkpoints, configs with `base:`) | Done; five full 30-epoch runs | 71 in `test_training.py` |
 | Inference (postprocess, Kalman tracker, streaming video I/O) | Done; run on one real clip (before it streamed) | 62 in `test_inference.py` |
 | CLI (`train` / `evaluate` / `check-data` / `extract-frames` / `infer` subcommands) | Done | 77 in `test_pipeline.py` |
-| Guards (test split behind `--final`; Claude Code hooks for held-out paths and the memory cap) | Done | 34 in `test_held_out.py`, 232 in `test_hooks.py` |
+| Guards (test split behind `--final`; Claude Code hooks for held-out paths and the memory cap) | Done | 34 in `test_held_out.py`, 236 in `test_hooks.py` |
+| Hand-labelling tool (`main.py label`, local web page) | Done; tried on a synthetic clip only | 129 in `test_labeling.py`, one of which runs 30 cases of the page's script in Node against a stubbed browser (no real browser) |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 721 tests (about 105 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 854 tests (about 115 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
@@ -270,6 +278,38 @@ Outputs a CSV with `Frame, X, Y, Confidence, Visibility` columns and (optionally
 `--model` takes a trainer checkpoint (`latest.pt` or `best.pt`) or a bare state dict for the default V2 `TrackNet()`. A trainer checkpoint is built as it was trained, from the config stored in it; if that config has `background_frame: true`, every window also gets the median of up to 50 evenly spaced frames of the input video as its background, so give such a model one static-camera clip: a video with cuts or camera motion has no meaningful median. `infer` always works at 512x288. Frames are converted to RGB, as in training. A video in the held-out test data (`tennis/game8`–`game10`, `badminton/Test`) also needs `--final`, for when the model is final; without it `infer` stops before loading anything.
 
 `infer` reads the video one frame at a time. It keeps no frames, only the detections (a few hundred bytes per frame). It decodes the video once for a model without a background frame. A model with one needs two extra passes first: one counts the frames that decode (the container's frame count can be wrong), the other collects the up to 50 frames the median is taken over. `infer` stops before writing anything if that second pass ends early or the model pass yields a different number of frames from the first. `--output-video` decodes the video once more.
+
+### Labelling your own footage
+
+```bash
+scripts/capped.sh uv run python main.py label --video path/to/clip.mp4 --out labels/clip.csv
+# then open the printed URL (http://localhost:8765/) in a browser; Ctrl-C stops the server
+```
+
+A video is decoded once, in order, into JPEGs next to the CSV (`labels/clip.frames/`, or `--frames-dir`), and the next run reuses them; a directory of images is shown as it is, in name order, and is refused if its names are numbers that are not zero-padded (`1.png ... 10.png` would put 10 before 2). The server binds to 127.0.0.1 only, since the page can change the labels, and answers only requests addressed to `localhost` or `127.0.0.1` on its port; WSL2's localhost forwarding (on by default) lets a Windows browser open it at `localhost`. Every change rewrites the CSV atomically and syncs it to disk before the page is told it is saved, so stopping at any point loses nothing, and running the command again resumes at the first unlabelled frame.
+
+Two files sit beside the CSV. `labels/clip.csv.source.json` records the frames the CSV labels (for a video: its name, size, modification time and frame count; for a directory: its path and its files' names and sizes), and a later run refuses to resume the CSV on anything else, naming what differs. `labels/clip.csv.lock` is held while the server runs, so a second run on the same CSV stops at once. A tab left open from an earlier run cannot write either: every change carries that run's token, and the page stops with a "reload it" error when the server does not recognise it. Like `infer`, `label` refuses a video in held-out test data (tennis `game8`–`game10`, badminton `Test`) unless the owner passes `--final`.
+
+A frame takes a label only after it has been on screen for 250 ms, and a held key labels one frame; a click or key that comes sooner (the second click of a double click, say) saves nothing, and the status line says why.
+
+The page shows the frame as large as the window allows, and a magnifier showing the area round the cursor 8 times enlarged, with a crosshair where the click will land. The ball is about 10 px across in 1080p footage and labels are scored at 4 px, so aim with the magnifier.
+
+| Key | Action |
+|-----|--------|
+| Click | ball here, visible (1); save and go to the next frame |
+| Shift+click | ball here but hard to see (2) |
+| `N` or Space | no ball in the frame (0); next frame |
+| `U` | cannot tell (3); next frame |
+| Left/Right or `A`/`D` | previous/next frame without labelling |
+| Backspace or Delete | clear this frame's label |
+| `G` | first unlabelled frame |
+| hold `B` | show the previous frame while held, to spot the moving ball by blinking |
+| `T` | hide or show the marks (a ring on this frame's label, faint dots on your labels of the two previous frames) |
+| `H` or `?` | help |
+
+The CSV has the `Frame,Visibility,X,Y` layout `load_labels` reads, one row per labelled frame. X and Y are source pixels with pixel centres at integers (the centre of the top-left pixel is 0.00, 0.00). Visibility `1` is a visible ball and `2` a ball that is there but hard to see (blurred or partly hidden), both with X and Y; `0` means no ball in the frame and `3` that the labeller cannot tell, both without X and Y. Frames marked `3` are to be left out when scoring; `load_labels` counts them as ball-absent by default.
+
+The page never shows a model's prediction. These labels are evaluation data for footage the models find hard; a pre-filled guess would pull the labeller toward the model's answer, and the measured miss rate with it.
 
 ## Dependencies
 
