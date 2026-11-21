@@ -5,18 +5,13 @@ labels."""
 from __future__ import annotations
 
 import csv
-import errno
-import fcntl
 import io
 import json
-import os
-import tempfile
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from labeling.files import sibling, write_atomically
 from labeling.frames import record_differences
 
 HEADER = ["Frame", "Visibility", "X", "Y"]
@@ -24,7 +19,6 @@ HEADER = ["Frame", "Visibility", "X", "Y"]
 # frame; 3 the labeller cannot tell (left out when scoring). 0 and 3 have no X,Y.
 WITH_POSITION = (1, 2)
 VISIBILITIES = (0, 1, 2, 3)
-NEW_FILE_MODE = 0o644
 
 
 @dataclass(frozen=True)
@@ -67,61 +61,26 @@ def check_label(
     return HandLabel(vis, *coords)
 
 
-def sibling(path: Path, suffix: str) -> Path:
-    """``path`` with ``suffix`` added to its whole name: labels.csv.lock."""
-    return path.with_name(path.name + suffix)
-
-
-def write_atomically(path: Path, text: str) -> None:
-    """Replace ``path`` with ``text``, durably: through a temporary file in the
-    same directory, synced, renamed over it, then the directory synced. An
-    existing file keeps its mode; a new one gets 0644. On failure ``path`` is
-    unchanged or holds ``text`` complete, and no temporary file is left."""
+def check_source(path: Path, source: dict) -> None:
+    """Refuse the existing CSV ``path`` unless its ``.source.json`` holds the
+    source record ``source``, compared on the keys of ``source`` only (so a
+    video's record before decoding, without its frame count, can be checked)."""
+    record = sibling(path, ".source.json")
+    fix = "pass another --out, or the frames it was made on"
     try:
-        mode = path.stat().st_mode & 0o7777
+        then = json.loads(record.read_text())
     except FileNotFoundError:
-        mode = NEW_FILE_MODE
-    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
-            os.fchmod(f.fileno(), mode)
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp, path)
-        _sync_directory(path.parent)
-    except BaseException:
-        Path(temp).unlink(missing_ok=True)
-        raise
-
-
-def _sync_directory(directory: Path) -> None:
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    except OSError as e:
-        # EINVAL: the file system cannot sync a directory (some network and
-        # WSL drives); the rename itself has been made
-        if e.errno != errno.EINVAL:
-            raise
-    finally:
-        os.close(fd)
-
-
-@contextmanager
-def exclusive_lock(out: Path) -> Iterator[None]:
-    """Hold an exclusive lock on ``<out>.lock`` (created if missing, and left
-    in place) while the block runs, so that one run at a time uses ``out``."""
-    lock = sibling(out, ".lock")
-    with open(lock, "a") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise OSError(
-                f"{out} is in use by another label run (it holds {lock}): "
-                "stop that run first"
-            ) from None
-        yield
+        raise ValueError(
+            f"{path} has no {record.name}, so which frames it labels is unknown: {fix}"
+        ) from None
+    except ValueError as e:
+        raise ValueError(f"{record} is not JSON ({e}): {fix}") from None
+    if not isinstance(then, dict):
+        raise ValueError(f"{record} does not hold a JSON object: {fix}")
+    if differences := record_differences({k: then.get(k) for k in source}, source):
+        raise ValueError(
+            f"{path} labels other frames ({'; '.join(differences)}): {fix}"
+        )
 
 
 class LabelStore:
@@ -144,13 +103,14 @@ class LabelStore:
         self.num_frames, self.width, self.height = num_frames, width, height
         self._lock = threading.Lock()
         self._closed = False
-        record = sibling(self.path, ".source.json")
         if self.path.exists():
-            self._check_record(record, source)
+            check_source(self.path, source)
             self.labels = self._load()
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            write_atomically(record, json.dumps(source, indent=1) + "\n")
+            write_atomically(
+                sibling(self.path, ".source.json"), json.dumps(source, indent=1) + "\n"
+            )
             self._write({})
 
     def set(self, frame: int, label: HandLabel) -> HandLabel:
@@ -178,22 +138,6 @@ class LabelStore:
 
     def _check(self, frame: int, label: HandLabel) -> HandLabel:
         return check_label(frame, label, self.num_frames, self.width, self.height)
-
-    def _check_record(self, record: Path, source: dict) -> None:
-        fix = "pass another --out, or the frames it was made on"
-        try:
-            then = json.loads(record.read_text())
-        except FileNotFoundError:
-            raise ValueError(
-                f"{self.path} has no {record.name}, so which frames it labels is "
-                f"unknown: {fix}"
-            ) from None
-        except ValueError as e:
-            raise ValueError(f"{record} is not JSON ({e}): {fix}") from None
-        if differences := record_differences(then, source):
-            raise ValueError(
-                f"{self.path} labels other frames ({'; '.join(differences)}): {fix}"
-            )
 
     def _write(self, labels: dict[int, HandLabel]) -> None:
         """Replace the file with ``labels``, then keep them; on failure the

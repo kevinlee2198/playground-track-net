@@ -240,6 +240,7 @@ MEMORY_CAP = [
     ("uv run tensorboard --logdir runs", ALLOW),
     ("python -X dev -m pytest tests/", "memory cap"),
     ("uv run python -m main infer --video a.mp4", "memory cap"),
+    ("uv run python main.py label --video a.mp4 --out l.csv", "memory cap"),
     ("uv run ruff check --fix .", ALLOW),
     ("uv run ruff format .", ALLOW),
     ("uv run ty check", ALLOW),

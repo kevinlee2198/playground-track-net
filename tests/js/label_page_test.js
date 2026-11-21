@@ -34,10 +34,10 @@ function context(canvas, calls) {
 // {status, body}, or "hold" to keep it in flight until release().
 function makePage({ frames = 5, labels = {}, image = () => "load", respond, dpr = 1 } = {}) {
   const clock = { now: 1000 };
-  const calls = [], requests = [], held = [], loads = {};
+  const calls = [], requests = [], held = [], loads = {}, imageUrls = [];
   let rafQueue = [];
   const layout = { rect: { ...RECT }, innerWidth: 800, innerHeight: 480 };
-  const winListeners = {};
+  const winListeners = {}, docListeners = {};
   function element(id) {
     const listeners = {};
     return {
@@ -54,6 +54,7 @@ function makePage({ frames = 5, labels = {}, image = () => "load", respond, dpr 
   class FakeImage {
     constructor() { this.complete = false; this.naturalWidth = 0; this.naturalHeight = 0; }
     set src(url) {
+      imageUrls.push(url);
       const frame = Number(/\/frames\/(\d+)/.exec(url)[1]);
       loads[frame] = (loads[frame] || 0) + 1;
       const how = image(frame, loads[frame]);
@@ -77,8 +78,14 @@ function makePage({ frames = 5, labels = {}, image = () => "load", respond, dpr 
   const defaultRespond = (req) => req.method === "PUT"
     ? { status: 200, body: JSON.parse(req.body) }
     : { status: 200, body: { deleted: 0 } };
+  const document = {
+    getElementById: (id) => els[id],
+    documentElement: { style: { setProperty() {} } },
+    visibilityState: "visible",
+    addEventListener: (type, fn) => { docListeners[type] = fn; },
+  };
   const sandbox = {
-    document: { getElementById: (id) => els[id], documentElement: { style: { setProperty() {} } } },
+    document,
     get innerWidth() { return layout.innerWidth; },
     get innerHeight() { return layout.innerHeight; },
     devicePixelRatio: dpr,
@@ -91,8 +98,11 @@ function makePage({ frames = 5, labels = {}, image = () => "load", respond, dpr 
       const req = { method: options.method || "GET", url, body: options.body, headers: options.headers || {} };
       requests.push(req);
       if (url === "/api/state")
-        return answer(200, { frames, width: 160, height: 90, version: "run1", labels: structuredClone(labels) });
+        return answer(200, {
+          frames, width: 160, height: 90, run: "run1", write_token: "token1", labels: structuredClone(labels),
+        });
       const reply = (respond || defaultRespond)(req);
+      if (reply === "network") throw new TypeError("Failed to fetch");
       if (reply === "hold") {
         return new Promise((resolve) => held.push(() => resolve(answer(200, defaultRespond(req).body))));
       }
@@ -103,19 +113,23 @@ function makePage({ frames = 5, labels = {}, image = () => "load", respond, dpr 
   vm.runInContext(SOURCE, sandbox);
 
   const page = {
-    els, calls, requests, loads, layout,
+    els, calls, requests, loads, layout, imageUrls,
     get state() { return sandbox.__state; },
     get status() { return els.status.textContent; },
     get errorShown() { return els.status.classList.set.has("error"); },
     changes: () => requests.filter((r) => r.method !== "GET"),
     puts: () => requests.filter((r) => r.method === "PUT"),
+    putUrls: () => page.puts().map((p) => p.url),
     // Lets every pending promise, image load and fetch finish (the clock stands still)
     settle: async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); },
     paint: () => { const queue = rafQueue; rafQueue = []; queue.forEach((fn) => fn()); },
+    // Everything pending finishes, then the next animation frame is drawn
+    show: async () => { await page.settle(); page.paint(); },
     wait: (ms) => { clock.now += ms; },
     // The labeller looks at the frame on screen for longer than the minimum
-    look: async () => { await page.settle(); page.paint(); page.wait(300); },
-    pointerDown: (x = 400, y = 225) => els.view.fire("pointerdown", { button: 0, clientX: x, clientY: y }),
+    look: async () => { await page.show(); page.wait(300); },
+    pointerDown: (x = 400, y = 225, extra = {}) =>
+      els.view.fire("pointerdown", { button: 0, pointerType: "mouse", clientX: x, clientY: y, ...extra }),
     pointerUp: (x = 400, y = 225, extra = {}) =>
       els.view.fire("click", { button: 0, clientX: x, clientY: y, shiftKey: false, ...extra }),
     click: (x = 400, y = 225, extra = {}) => { page.pointerDown(x, y); page.pointerUp(x, y, extra); },
@@ -126,8 +140,13 @@ function makePage({ frames = 5, labels = {}, image = () => "load", respond, dpr 
     },
     keyUp: (k) => winListeners.keyup({ key: k }),
     fireWindow: (type) => winListeners[type]({}),
+    // The tab is hidden ("hidden") or shown again ("visible")
+    setVisibility: (visibility) => {
+      document.visibilityState = visibility;
+      docListeners.visibilitychange({});
+    },
     release: () => held.splice(0).forEach((fn) => fn()),
-    start: async () => { await page.settle(); page.paint(); return page; },
+    start: async () => { await page.show(); return page; },
   };
   return page;
 }
@@ -144,7 +163,7 @@ test("starts at the first unlabelled frame and shows it in the status line", asy
   assert.ok(page.status.includes("1 of 5 labelled"), page.status);
 });
 
-test("a click after looking saves that pixel, with the run's token, and moves on", async () => {
+test("a click after looking saves that pixel, with the write token, and moves on", async () => {
   const page = await makePage().start();
   await page.look();
   page.click(400, 225);
@@ -152,7 +171,9 @@ test("a click after looking saves that pixel, with the run's token, and moves on
   const [put] = page.puts();
   assert.equal(put.url, "/api/labels/0");
   assert.deepEqual(JSON.parse(put.body), { visibility: 1, x: 79.5, y: 44.5 });
-  assert.equal(put.headers["X-Label-Run"], "run1");
+  assert.equal(put.headers["X-Label-Write-Token"], "token1");
+  assert.ok(page.imageUrls.length > 0);
+  assert.ok(page.imageUrls.every((url) => url.endsWith("?run=run1")), page.imageUrls);
   assert.equal(page.state.current, 1);
   assert.deepEqual(page.state.labels[0], { visibility: 1, x: 79.5, y: 44.5 });
 });
@@ -182,9 +203,9 @@ test("N, Space and U save no ball (0) and cannot tell (3)", async () => {
 
 test("the last frame stays and says so", async () => {
   const page = await makePage({ frames: 2 }).start();
-  await page.look(); page.key("n"); await page.settle();
-  await page.look(); page.key("u"); await page.settle();
-  page.paint();
+  await page.look(); page.key("n");
+  await page.look(); page.key("u");
+  await page.show();
   assert.equal(page.state.current, 1);
   assert.equal(page.state.labels[1].visibility, 3);
   assert.ok(page.status.includes("that was the last frame"), page.status);
@@ -195,25 +216,22 @@ test("replacing a label says what it was", async () => {
   page.key("ArrowLeft");
   await page.look();
   page.click(400, 225);
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.state.current, 1);
   assert.ok(page.status.includes("frame 0 replaced: was 0 no ball"), page.status);
 });
 
-// Item 1: a frame takes a label only once it has been on screen for 250 ms
+// A frame takes a label only once it has been on screen for 250 ms
 
 test("a double click labels one frame: the second is too fast for the next", async () => {
   const page = await makePage().start();
   await page.look();
   page.click();
-  await page.settle();  // the save returns and the page moves to frame 1
-  page.paint();
+  await page.show();  // the save returns and the page moves to frame 1, drawn
   page.wait(100);
   page.click();
-  await page.settle();
-  page.paint();
-  assert.deepEqual(page.puts().map((p) => p.url), ["/api/labels/0"]);
+  await page.show();
+  assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
   assert.equal(page.state.current, 1);
   assert.ok(!(1 in page.state.labels));
   assert.ok(page.status.includes("Frame 1 NOT saved: too fast"), page.status);
@@ -228,13 +246,13 @@ test("a click before the next frame is drawn is refused, however late", async ()
   page.wait(1000);
   page.click();
   await page.settle();
-  assert.deepEqual(page.puts().map((p) => p.url), ["/api/labels/0"]);
+  assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
   page.paint();
   assert.ok(page.status.includes("not on screen yet"), page.status);
   page.wait(300);
   page.click();
   await page.settle();
-  assert.deepEqual(page.puts().map((p) => p.url), ["/api/labels/0", "/api/labels/1"]);
+  assert.deepEqual(page.putUrls(), ["/api/labels/0", "/api/labels/1"]);
 });
 
 test("a click or key within 250 ms of the frame appearing is refused, then taken", async () => {
@@ -242,14 +260,121 @@ test("a click or key within 250 ms of the frame appearing is refused, then taken
   page.wait(249);
   page.click();
   page.key("n");
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("too fast: look at the frame first"), page.status);
   page.wait(1);
   page.key("n");
   await page.settle();
   assert.equal(page.puts().length, 1);
+});
+
+test("on the last frame, a double click saves once: the clock starts again after a save", async () => {
+  const page = await makePage({ frames: 1 }).start();
+  await page.look();
+  page.click(400, 225);
+  await page.show();
+  page.wait(100);
+  page.click(402, 226);
+  await page.show();
+  assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
+  assert.ok(page.status.includes("Frame 0 NOT saved: too fast"), page.status);
+  page.wait(250);
+  page.click(402, 226);
+  await page.settle();
+  assert.deepEqual(page.putUrls(), ["/api/labels/0", "/api/labels/0"]);
+});
+
+// Coming back to the window: the click that activates it, or a key at once,
+// labels nothing, however long the frame was on screen before
+
+const RETURNS = {
+  "window focus": (page) => { page.fireWindow("blur"); page.wait(60000); page.fireWindow("focus"); },
+  "tab shown again": (page) => { page.setVisibility("hidden"); page.wait(60000); page.setVisibility("visible"); },
+};
+for (const [how, comeBack] of Object.entries(RETURNS)) {
+  test(`${how}: a click at once is refused and says why; 250 ms later it is taken`, async () => {
+    const page = await makePage().start();
+    await page.look();
+    comeBack(page);
+    page.click();
+    await page.show();
+    assert.equal(page.puts().length, 0);
+    assert.ok(page.status.startsWith("Frame 0 NOT saved: the window has only just come back"), page.status);
+    assert.ok(page.errorShown);
+    page.wait(249);
+    page.click();
+    await page.settle();
+    assert.equal(page.puts().length, 0);
+    page.wait(1);
+    page.click();
+    await page.settle();
+    assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
+  });
+
+  test(`${how}: a press that came just before it is refused, however long it is held`, async () => {
+    const page = await makePage().start();
+    await page.look();
+    page.fireWindow("blur");
+    page.pointerDown();  // the activating click's press, delivered first
+    comeBack(page);
+    await page.look();  // the frame is painted again and on screen long enough
+    page.pointerUp();
+    await page.show();
+    assert.equal(page.puts().length, 0);
+    assert.ok(page.status.includes("the window has only just come back"), page.status);
+  });
+
+  test(`${how}: N at once is refused; 250 ms later it is taken`, async () => {
+    const page = await makePage().start();
+    await page.look();
+    comeBack(page);
+    page.key("n");
+    await page.show();
+    page.wait(249);
+    page.key("n");
+    await page.settle();
+    assert.equal(page.puts().length, 0);
+    assert.ok(page.status.includes("the window has only just come back"), page.status);
+    page.wait(1);
+    page.key("n");
+    await page.settle();
+    assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
+  });
+}
+
+// A click is where the button went down and came up
+
+test("a click whose pointer moved up to 2 CSS px is taken, at the release point", async () => {
+  const page = await makePage().start();
+  await page.look();
+  page.pointerDown(400, 225);
+  page.pointerUp(400, 227);
+  await page.settle();
+  assert.deepEqual(JSON.parse(page.puts()[0].body), { visibility: 1, x: 79.5, y: 44.9 });
+});
+
+test("a click whose pointer moved more than 2 CSS px is refused", async () => {
+  const page = await makePage().start();
+  await page.look();
+  page.pointerDown(400, 225);
+  page.pointerUp(401.5, 226.5);  // 2.12 px
+  await page.show();
+  page.pointerDown(100, 100);
+  page.pointerUp(400, 300);  // a drag
+  await page.show();
+  assert.equal(page.puts().length, 0);
+  assert.ok(page.status.includes("Frame 0 NOT saved: the pointer moved during the click"), page.status);
+});
+
+test("a touch is refused: there is no magnifier for it", async () => {
+  const page = await makePage().start();
+  await page.look();
+  page.pointerDown(200, 200, { pointerType: "touch" });
+  page.pointerUp(200, 200);
+  await page.show();
+  assert.equal(page.puts().length, 0);
+  assert.ok(page.status.includes("touch is not taken"), page.status);
 });
 
 test("the arrow keys, A and D move at once", async () => {
@@ -265,8 +390,7 @@ test("a frame whose image never loads cannot be labelled", async () => {
   await page.look();
   page.click();
   page.key("n");
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("frame 0 is still loading"), page.status);
 });
@@ -275,8 +399,7 @@ test("a frame whose image failed is loaded again when shown again", async () => 
   const page = await makePage({ image: (frame, attempt) => (frame === 0 && attempt === 1 ? "fail" : "load") }).start();
   await page.look();
   page.click();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("frame 0 failed to load"), page.status);
   page.key("ArrowRight");
@@ -285,23 +408,22 @@ test("a frame whose image failed is loaded again when shown again", async () => 
   assert.equal(page.loads[0], 2);
   page.click();
   await page.settle();
-  assert.deepEqual(page.puts().map((p) => p.url), ["/api/labels/0"]);
+  assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
 });
 
-// Item 2: a held key labels one frame
+// A held key labels one frame
 
 test("holding N labels one frame, not one per auto-repeat", async () => {
   const page = await makePage({ frames: 50 }).start();
   await page.look();
   page.key("n");
   for (let i = 0; i < 20; i++) {
-    await page.settle();
-    page.paint();
+    await page.show();
     page.wait(33);
     assert.ok(page.key("n", { repeat: true }));  // handled, so Space does not scroll
   }
   await page.settle();
-  assert.deepEqual(page.puts().map((p) => p.url), ["/api/labels/0"]);
+  assert.deepEqual(page.putUrls(), ["/api/labels/0"]);
   assert.equal(page.state.current, 1);
 });
 
@@ -309,8 +431,7 @@ test("pressing N again before the next frame has been seen is refused", async ()
   const page = await makePage().start();
   await page.look();
   page.key("n");
-  await page.settle();
-  page.paint();
+  await page.show();
   page.wait(100);
   page.key("n");
   await page.settle();
@@ -324,41 +445,39 @@ test("a held arrow key keeps moving", async () => {
   assert.equal(page.state.current, 6);
 });
 
-// Item 3: a page of an earlier server run
+// Another tab, or a newer run, has the write token
 
-test("a 409 for another run stops the page for good", async () => {
+test("a 409 (another tab or a newer run has taken over) stops the page for good", async () => {
   const page = await makePage({
-    respond: () => ({ status: 409, body: "this page belongs to an earlier run of the label tool: reload it\n" }),
+    respond: () => ({ status: 409, body: "another tab or a newer run has taken over: reload this page\n" }),
   }).start();
   await page.look();
   page.click();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.changes().length, 1);
-  assert.ok(page.status.includes("earlier run of the label tool: reload it"), page.status);
+  assert.ok(page.status.startsWith("Another tab or a newer run has taken over: reload this page. "
+    + "Frame 0 was NOT saved"), page.status);
   assert.ok(page.errorShown);
   assert.equal(page.state.current, 0);
   assert.ok(!(0 in page.state.labels));
   for (const k of ["n", "u", " ", "ArrowRight", "d", "Backspace", "g"]) page.key(k);
   await page.look();
   page.click();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.changes().length, 1);
   assert.equal(page.state.current, 0);
-  assert.ok(page.status.includes("reload it"), page.status);
+  assert.ok(page.status.includes("reload this page"), page.status);
 });
 
-test("a clear sends the run's token too", async () => {
+test("a clear sends the write token too", async () => {
   const page = await makePage({ labels: { 1: { visibility: 0, x: null, y: null } } }).start();
   page.key("ArrowRight");
   page.key("Backspace");
-  await page.settle();
-  page.paint();
+  await page.show();
   const [del] = page.changes();
   assert.equal(del.method, "DELETE");
   assert.equal(del.url, "/api/labels/1");
-  assert.equal(del.headers["X-Label-Run"], "run1");
+  assert.equal(del.headers["X-Label-Write-Token"], "token1");
   assert.ok(!(1 in page.state.labels));
   assert.ok(page.status.includes("cleared frame 1"), page.status);
   page.key("Backspace");
@@ -366,7 +485,7 @@ test("a clear sends the run's token too", async () => {
   assert.ok(page.status.includes("frame 1 has no label to clear"), page.status);
 });
 
-// Item 4: B, or a frame change, between pointer-down and pointer-up
+// B, or a frame change, between pointer-down and pointer-up
 
 test("B held at pointer-down and released before pointer-up: refused", async () => {
   const page = await makePage().start();
@@ -378,8 +497,7 @@ test("B held at pointer-down and released before pointer-up: refused", async () 
   page.keyUp("b");
   await page.look();  // long enough after the release
   page.pointerUp();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("B was held"), page.status);
 });
@@ -393,8 +511,7 @@ test("B pressed during a click: refused", async () => {
   page.paint();
   page.wait(300);
   page.pointerUp();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("B was held"), page.status);
 });
@@ -406,8 +523,7 @@ test("N, Space and U are refused while B is held, and taken after", async () => 
   page.key("b");
   await page.look();
   for (const k of ["n", " ", "u"]) page.key(k);
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("Frame 1 NOT saved: B was held"), page.status);
   assert.ok(page.status.includes("SHOWING PREVIOUS FRAME"), page.status);
@@ -415,7 +531,7 @@ test("N, Space and U are refused while B is held, and taken after", async () => 
   await page.look();
   page.key("n");
   await page.settle();
-  assert.deepEqual(page.puts().map((p) => p.url), ["/api/labels/1"]);
+  assert.deepEqual(page.putUrls(), ["/api/labels/1"]);
 });
 
 test("a frame change between pointer-down and pointer-up: refused", async () => {
@@ -425,8 +541,7 @@ test("a frame change between pointer-down and pointer-up: refused", async () => 
   page.key("ArrowRight");
   await page.look();
   page.pointerUp();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("the click started on frame 0"), page.status);
 });
@@ -435,8 +550,7 @@ test("a click that did not start on the frame: refused", async () => {
   const page = await makePage().start();
   await page.look();
   page.pointerUp();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.puts().length, 0);
   assert.ok(page.status.includes("did not start on the frame"), page.status);
 });
@@ -451,22 +565,20 @@ test("a failed save stays, shows the error, and the next click works", async () 
   }).start();
   await page.look();
   page.click();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.state.current, 0);
   assert.ok(!(0 in page.state.labels));
   assert.ok(page.errorShown);
   assert.ok(page.status.startsWith("Frame 0 NOT saved (500 [Errno 28] No space left on device)"), page.status);
   fail = false;
   page.click();
-  await page.settle();
-  page.paint();
+  await page.show();
   assert.equal(page.state.current, 1);
   assert.equal(page.state.labels[0].visibility, 1);
   assert.ok(!page.errorShown);
 });
 
-test("one change at a time: a key while saving is refused with a note", async () => {
+test("one change at a time: a key or click while saving is refused, in red", async () => {
   const page = await makePage({ respond: () => "hold" }).start();
   await page.look();
   page.key("n");
@@ -474,10 +586,68 @@ test("one change at a time: a key while saving is refused with a note", async ()
   page.click();
   page.paint();
   assert.equal(page.changes().length, 1);
-  assert.ok(page.status.includes("still saving"), page.status);
+  assert.ok(page.status.startsWith("Right on frame 0 NOT done: the last change was still being saved"
+    + "   ·   the click on frame 0 NOT done"), page.status);
+  assert.ok(page.errorShown);
   page.release();
   await page.settle();
   assert.equal(page.state.current, 1);
+});
+
+test("a refusal during a save outlasts the save's result, until the next input", async () => {
+  const page = await makePage({ respond: () => "hold" }).start();
+  await page.look();
+  page.click();          // a mistaken click on frame 0, still being saved
+  page.key("Backspace"); // undo at once: refused
+  page.key("Backspace"); // the same refusal is listed once
+  page.release();
+  await page.show();
+  assert.equal(page.state.current, 1);  // the save went through and moved on
+  assert.deepEqual(page.changes().map((c) => c.method), ["PUT"]);
+  const refusal = "Backspace on frame 0 NOT done: the last change was still being saved";
+  assert.ok(page.status.startsWith(refusal + "   ·   Frame 1 (0–4)"), page.status);
+  assert.equal(page.status.split(refusal).length, 2);
+  assert.ok(page.errorShown);
+  page.wait(5000);
+  page.paint();
+  assert.ok(page.status.includes(refusal), "a refusal stays until the next input");
+  page.key("t");
+  page.paint();
+  assert.ok(!page.status.includes("NOT done"), page.status);
+  assert.ok(!page.errorShown);
+});
+
+test("a save the server refused says NOT saved; one with no answer may have been made", async () => {
+  let reply = { status: 400, body: "visibility 1 needs x in 0-159, got 160\n" };
+  const page = await makePage({ respond: () => reply }).start();
+  await page.look();
+  page.click();
+  await page.show();
+  assert.equal(page.status.split("   ·   ")[0], "Frame 0 NOT saved (400 visibility 1 needs x in 0-159, got 160)");
+  reply = "network";
+  page.click();
+  await page.show();
+  assert.equal(page.status.split("   ·   ")[0],
+    "Frame 0 may not have been saved (Failed to fetch): reload the page to check");
+  assert.ok(page.errorShown);
+  page.key("ArrowRight");
+  page.key("ArrowLeft");
+  await page.look();
+  page.key("u");
+  await page.show();
+  assert.equal(page.status.split("   ·   ")[0],
+    "Frame 0 may not have been saved (Failed to fetch): reload the page to check");
+});
+
+test("a clear with no answer may have been made", async () => {
+  const page = await makePage({
+    labels: { 0: { visibility: 0, x: null, y: null } }, respond: () => "network",
+  }).start();
+  page.key("ArrowLeft");
+  page.key("Backspace");
+  await page.show();
+  assert.ok(page.status.startsWith(
+    "Frame 0 may not have been cleared (Failed to fetch): reload the page to check"), page.status);
 });
 
 // Drawing

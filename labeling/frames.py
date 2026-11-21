@@ -17,7 +17,8 @@ from inference.video_preprocess import _decode, _image_files, _read_image
 JPEG_PARAMS = [cv2.IMWRITE_JPEG_QUALITY, 95]
 # Written last into an extraction: the source record of the video it came from
 MANIFEST = "source.json"
-NUMBER = re.compile(r"[0-9]+")
+# A frame name's stem as a prefix and a trailing number: "frame_0012" or "0012"
+NUMBERED = re.compile(r"(.*?)([0-9]+)")
 
 
 @dataclass(frozen=True)
@@ -36,8 +37,9 @@ def prepare_frames(source: str | Path, frames_dir: str | Path | None) -> FrameSe
     frames, decoded in order into ``frames_dir`` (frame i is the i-th frame that
     decodes, never found by seeking).
 
-    A directory whose image names are all numbers must have them in numeric
-    order when sorted by name (``0001.png``, not ``1.png ... 10.png``).
+    A directory whose image names are one prefix and a number (``0001.png``,
+    ``frame_1.png``) must have the numbers ascending when sorted by name
+    (``0001.png``, not ``1.png ... 10.png``).
 
     A video is decoded into ``<frames_dir>.partial`` and renamed into place when
     complete, with a manifest holding the video's source record. A finished
@@ -50,13 +52,7 @@ def prepare_frames(source: str | Path, frames_dir: str | Path | None) -> FrameSe
         if frames_dir is not None:
             raise ValueError("--frames-dir applies only to a video, not a directory")
         paths = _image_files(source)
-        _require_numeric_order(source, paths)
-        record = {
-            "kind": "directory",
-            "path": str(source.resolve()),
-            "count": len(paths),
-            "files": [[p.name, p.stat().st_size] for p in paths],
-        }
+        record = _directory_record(source, paths)
     else:
         if frames_dir is None:
             raise ValueError("a video needs a frames directory")
@@ -66,6 +62,16 @@ def prepare_frames(source: str | Path, frames_dir: str | Path | None) -> FrameSe
         paths, record = _finished_extraction(source, frames_dir)
     height, width = _read_image(paths[0]).shape[:2]
     return FrameSet(paths, width, height, record)
+
+
+def record_before_decoding(source: str | Path) -> dict:
+    """As much of the source record of ``source`` as is known without decoding
+    it, in a second: a directory's whole record, a video's without its frame
+    count."""
+    source = Path(source)
+    if source.is_dir():
+        return _directory_record(source, _image_files(source))
+    return _video_record(source)
 
 
 def record_differences(then: dict, now: dict) -> list[str]:
@@ -86,11 +92,23 @@ def record_differences(then: dict, now: dict) -> list[str]:
     return differences
 
 
+def _directory_record(directory: Path, paths: list[Path]) -> dict:
+    _require_numeric_order(directory, paths)
+    return {
+        "kind": "directory",
+        "path": str(directory.resolve()),
+        "count": len(paths),
+        "files": [[p.name, p.stat().st_size] for p in paths],
+    }
+
+
 def _require_numeric_order(directory: Path, paths: list[Path]) -> None:
-    """Refuse numbered frame names whose name order is not their numeric order."""
-    if not all(NUMBER.fullmatch(p.stem) for p in paths):
+    """Refuse frame names that are one prefix and a number whose name order is
+    not their numeric order."""
+    numbered = [m for p in paths if (m := NUMBERED.fullmatch(p.stem))]
+    if len(numbered) < len(paths) or len({m[1] for m in numbered}) != 1:
         return
-    numbers = [int(p.stem) for p in paths]
+    numbers = [int(m[2]) for m in numbered]
     for i in range(1, len(paths)):
         if numbers[i] <= numbers[i - 1]:
             raise ValueError(

@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -19,11 +20,12 @@ import pytest
 import main
 from data.labels import load_labels
 from labeling import HandLabel, LabelServer, LabelStore, prepare_frames
+from labeling import files as files_module
 from labeling import frames as frames_module
-from labeling import store as store_module
+from labeling.files import exclusive_lock
 from labeling.frames import record_differences
-from labeling.server import RUN_HEADER
-from labeling.store import check_label, exclusive_lock
+from labeling.server import TAKEN_OVER, TOKEN_HEADER, allowed_hosts
+from labeling.store import check_label
 from tests.conftest import CLIP_SIZE, write_moving_square_clip
 
 WIDTH, HEIGHT = CLIP_SIZE  # 160x90
@@ -198,6 +200,8 @@ def rename_frames(directory: Path, names: list[str]) -> None:
     [
         ["1.png", "2.png", "3.png", "10.png", "11.png"],  # name order 1, 10, 11, 2, 3
         ["01.png", "1.png", "2.png", "3.png", "4.png"],  # 01 and 1 are one number
+        # One prefix and a trailing number: name order 1, 10, 11, 2, 3
+        ["frame_1.png", "frame_2.png", "frame_3.png", "frame_10.png", "frame_11.png"],
     ],
 )
 def test_numbered_names_out_of_numeric_order_are_refused(tmp_path: Path, names):
@@ -213,6 +217,14 @@ def test_numbered_names_out_of_numeric_order_are_refused(tmp_path: Path, names):
         ["0.png", "1.png", "2.png", "3.png", "9.png"],
         ["a.png", "b.png", "c.png", "d.png", "e.png"],
         ["1.png", "10.png", "2.png", "3.png", "x.png"],  # not all numbers: name order
+        [
+            "frame_01.png",
+            "frame_02.png",
+            "frame_03.png",
+            "frame_04.png",
+            "frame_10.png",
+        ],
+        ["a1.png", "a10.png", "b2.png", "b3.png", "c4.png"],  # prefixes differ
     ],
 )
 def test_other_names_are_taken_in_name_order(tmp_path: Path, names):
@@ -292,7 +304,7 @@ def test_store_writes_through_a_temporary_file_and_os_replace(
     store.set(0, HandLabel(1, 1, 1))
     before = store.path.read_text()
     events = []
-    real_replace, real_sync = os.replace, store_module._sync_directory
+    real_replace, real_sync = os.replace, files_module._sync_directory
 
     def spy_replace(src, dst):
         events.append(("replace", Path(src).parent, Path(dst)))
@@ -303,7 +315,7 @@ def test_store_writes_through_a_temporary_file_and_os_replace(
         return real_sync(directory)
 
     monkeypatch.setattr(os, "replace", spy_replace)
-    monkeypatch.setattr(store_module, "_sync_directory", spy_sync)
+    monkeypatch.setattr(files_module, "_sync_directory", spy_sync)
     store.set(1, HandLabel(1, 2, 2))
     assert events == [("replace", tmp_path, store.path), ("sync", tmp_path)]
 
@@ -343,9 +355,9 @@ def test_directory_sync_tolerates_only_a_file_system_that_cannot(
     monkeypatch.setattr(os, "fsync", failing_fsync)
     if raises:
         with pytest.raises(OSError, match=os.strerror(code)):
-            store_module._sync_directory(tmp_path)
+            files_module._sync_directory(tmp_path)
     else:
-        store_module._sync_directory(tmp_path)
+        files_module._sync_directory(tmp_path)
 
 
 def test_closed_store_refuses_changes(tmp_path: Path):
@@ -444,6 +456,8 @@ def test_bad_existing_file_is_an_error_and_left_alone(
     [
         (None, "has no labels.csv.source.json"),
         ("{not json", "is not JSON"),
+        ('["kind", "test"]', "does not hold a JSON object"),
+        ("null", "does not hold a JSON object"),
         (json.dumps({**SOURCE, "name": "other"}), "name was 'other', is 'clip'"),
     ],
 )
@@ -512,7 +526,8 @@ def server(tmp_path: Path):
     store = LabelStore(
         tmp_path / "labels.csv", 5, frames.width, frames.height, frames.source
     )
-    srv = LabelServer(frames, store, 0)
+    srv = LabelServer(0)
+    srv.attach(frames, store)
     # A short poll interval so that shutdown() returns at once
     thread = threading.Thread(target=srv.serve_forever, args=(0.02,), daemon=True)
     thread.start()
@@ -532,15 +547,19 @@ def request(
     method: str,
     path: str,
     body: object = None,
-    raw: bytes | None = None,
     headers: dict | None = None,
 ) -> tuple[int, http.client.HTTPResponse, bytes]:
-    """Send a request, with this run's RUN_HEADER unless ``headers`` say otherwise."""
+    """Send a request with ``body`` as JSON (bytes as they are), and the
+    server's latest write token in TOKEN_HEADER unless ``headers`` say otherwise
+    (None: no such header)."""
     conn = connect(srv)
     try:
-        if body is not None:
+        if body is None or isinstance(body, bytes):
+            raw = body
+        else:
             raw = json.dumps(body).encode()
-        headers = {RUN_HEADER: srv.version, **(headers or {})}
+        headers = {TOKEN_HEADER: srv.write_token, **(headers or {})}
+        headers = {k: v for k, v in headers.items() if v is not None}
         conn.request(method, path, body=raw, headers=headers)
         response = conn.getresponse()
         return response.status, response, response.read()
@@ -558,10 +577,56 @@ def test_state_lists_size_and_labels(server: LabelServer):
         "height": HEIGHT,
         "labels": {},
     }
-    assert state["version"] == server.version
+    assert state["run"] == server.run_id
+    assert state["write_token"] == server.write_token != server.run_id
     request(server, "PUT", "/api/labels/3", {"visibility": 2, "x": 1.5, "y": 2})
     state = json.loads(request(server, "GET", "/api/state")[2])
     assert state["labels"] == {"3": {"visibility": 2, "x": 1.5, "y": 2.0}}
+
+
+def page_token(srv: LabelServer) -> str:
+    """The write token a page gets when it loads."""
+    return json.loads(request(srv, "GET", "/api/state")[2])["write_token"]
+
+
+def test_each_state_request_issues_a_write_token_and_voids_the_last(
+    server: LabelServer,
+):
+    first = page_token(server)
+    put = {"visibility": 0}
+    assert request(server, "PUT", "/api/labels/0", put, {TOKEN_HEADER: first})[0] == 200
+    second = page_token(server)  # another tab loads the page
+    assert second != first
+    before = server.store.path.read_bytes()
+    for method, body in [("PUT", put), ("DELETE", None)]:
+        status, _, text = request(
+            server, method, "/api/labels/1", body, {TOKEN_HEADER: first}
+        )
+        assert (status, text) == (409, TAKEN_OVER)
+    assert server.store.path.read_bytes() == before
+    assert (
+        request(server, "PUT", "/api/labels/1", put, {TOKEN_HEADER: second})[0] == 200
+    )
+    assert sorted(server.store.labels) == [0, 1]
+
+
+def test_a_new_run_voids_every_token_and_has_a_new_run_id(server: LabelServer):
+    token = page_token(server)
+    restarted = LabelServer(0)
+    restarted.attach(server.frames, server.store)
+    thread = threading.Thread(target=restarted.serve_forever, args=(0.02,))
+    thread.start()
+    try:
+        assert restarted.run_id != server.run_id
+        status, _, text = request(
+            restarted, "PUT", "/api/labels/0", {"visibility": 0}, {TOKEN_HEADER: token}
+        )
+        assert (status, text) == (409, TAKEN_OVER)
+        assert server.store.labels == {}
+    finally:
+        restarted.shutdown()
+        restarted.server_close()
+        thread.join(5)
 
 
 def test_page_and_scripts_are_served(server: LabelServer):
@@ -631,10 +696,7 @@ def test_bad_requests_answer_400_and_write_nothing(
 ):
     request(server, "PUT", "/api/labels/2", {"visibility": 1, "x": 3, "y": 4})
     before = server.store.path.read_bytes()
-    if isinstance(body, bytes):
-        status, response, text = request(server, method, path, raw=body)
-    else:
-        status, response, text = request(server, method, path, body)
+    status, response, text = request(server, method, path, body)
     assert status == 400
     assert response.getheader("Content-Type", "").startswith("text/plain")
     assert message in text.decode()
@@ -646,7 +708,7 @@ def test_put_without_content_length_is_400(server: LabelServer):
     conn = connect(server)
     try:
         conn.putrequest("PUT", "/api/labels/0")
-        conn.putheader(RUN_HEADER, server.version)
+        conn.putheader(TOKEN_HEADER, server.write_token)
         conn.endheaders()
         response = conn.getresponse()
         assert response.status == 400
@@ -679,24 +741,16 @@ def test_unknown_routes_are_404(server: LabelServer, method: str, path: str):
 
 @pytest.mark.parametrize("token", [None, "", "0123abcd", "stale"])
 @pytest.mark.parametrize("method", ["PUT", "DELETE"])
-def test_change_from_another_run_is_409_and_writes_nothing(
+def test_change_without_the_latest_token_is_409_and_writes_nothing(
     server: LabelServer, method: str, token: str | None
 ):
     request(server, "PUT", "/api/labels/2", {"visibility": 0})
     before = server.store.path.read_bytes()
-    conn = connect(server)
-    try:
-        body = (
-            json.dumps({"visibility": 1, "x": 1, "y": 1}) if method == "PUT" else None
-        )
-        headers = {} if token is None else {RUN_HEADER: token}
-        conn.request(method, "/api/labels/2", body=body, headers=headers)
-        response = conn.getresponse()
-        status, text = response.status, response.read().decode()
-    finally:
-        conn.close()
-    assert status == 409
-    assert "earlier run" in text and "reload" in text
+    body = {"visibility": 1, "x": 1, "y": 1} if method == "PUT" else None
+    status, _, text = request(
+        server, method, "/api/labels/2", body, headers={TOKEN_HEADER: token}
+    )
+    assert (status, text) == (409, TAKEN_OVER)
     assert server.store.path.read_bytes() == before
     assert server.store.labels == {2: HandLabel(0, None, None)}
 
@@ -723,7 +777,7 @@ def test_requests_must_name_this_server_as_host(
         conn.putrequest(method, path, skip_host=True)
         if host is not None:
             conn.putheader("Host", host.format(port=port))
-        conn.putheader(RUN_HEADER, server.version)
+        conn.putheader(TOKEN_HEADER, server.write_token)
         body = b'{"visibility": 0}' if method == "PUT" else b""
         conn.putheader("Content-Length", str(len(body)))
         conn.endheaders(body)
@@ -735,6 +789,16 @@ def test_requests_must_name_this_server_as_host(
     if status == 400:
         assert b"Host header" in text
         assert server.store.path.read_text() == HEADER
+
+
+def test_port_80_takes_a_host_without_a_port():
+    assert allowed_hosts(80) == (
+        "localhost:80",
+        "127.0.0.1:80",
+        "localhost",
+        "127.0.0.1",
+    )
+    assert allowed_hosts(8765) == ("localhost:8765", "127.0.0.1:8765")
 
 
 @pytest.mark.parametrize("failure", ["os.replace", "directory not writable"])
@@ -875,31 +939,93 @@ def test_second_run_on_the_same_csv_stops(video: Path, tmp_path: Path, monkeypat
     out = tmp_path / "clip.csv"
     with exclusive_lock(out):
         with pytest.raises(SystemExit) as exit_info:
-            run_label(monkeypatch, "--video", str(video), "--out", str(out))
+            run_label(
+                monkeypatch, "--video", str(video), "--out", str(out), "--port", "0"
+            )
     message = str(exit_info.value.code)
     assert message.startswith("label: ") and "in use by another label run" in message
     assert not out.exists()
     assert not (tmp_path / "clip.frames").exists()
 
 
-def test_label_refuses_a_csv_of_other_frames(video: Path, tmp_path: Path, monkeypatch):
+def no_decoding(monkeypatch) -> None:
+    def fail(_):
+        raise AssertionError("decoded before the checks")
+
+    monkeypatch.setattr(frames_module, "_decode", fail)
+
+
+def test_label_on_a_busy_port_stops_before_decoding_or_writing(
+    video: Path, tmp_path: Path, monkeypatch
+):
+    no_decoding(monkeypatch)
+    with socket.create_server(("127.0.0.1", 0)) as busy:
+        port = str(busy.getsockname()[1])
+        with pytest.raises(SystemExit) as exit_info:
+            run_label(
+                monkeypatch,
+                "--video",
+                str(video),
+                "--out",
+                str(tmp_path / "o" / "l.csv"),
+                "--port",
+                port,
+            )
+    message = str(exit_info.value.code)
+    assert message == (
+        f"label: port {port} on 127.0.0.1 is in use, by another label run or "
+        "another program: pass another --port"
+    )
+    assert not (tmp_path / "o").exists()
+
+
+def test_label_refuses_a_csv_of_other_frames_before_decoding(
+    video: Path, tmp_path: Path, monkeypatch
+):
     def stop(self):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(LabelServer, "serve_forever", stop)
     out = tmp_path / "clip.csv"
     run_label(monkeypatch, "--video", str(video), "--out", str(out), "--port", "0")
+    no_decoding(monkeypatch)
     other = write_moving_square_clip(tmp_path / "other" / "clip.mp4", 14)
-    args = ["--video", str(other), "--out", str(out), "--port", "0"]
-    with pytest.raises(SystemExit) as exit_info:  # its frames directory, first
-        run_label(monkeypatch, *args)
-    assert "another video" in str(exit_info.value.code)
-    with pytest.raises(SystemExit) as exit_info:  # then the CSV
-        run_label(monkeypatch, *args, "--frames-dir", str(tmp_path / "other.frames"))
-    message = str(exit_info.value.code)
-    assert message.startswith(f"label: {out} labels other frames")
-    assert "bytes was" in message and "frames was 10, is 14" in message
+    before = sorted(tmp_path.iterdir())
+    for frames_dir in [[], ["--frames-dir", str(tmp_path / "other.frames")]]:
+        with pytest.raises(SystemExit) as exit_info:
+            run_label(
+                monkeypatch,
+                "--video",
+                str(other),
+                "--out",
+                str(out),
+                "--port",
+                "0",
+                *frames_dir,
+            )
+        message = str(exit_info.value.code)
+        assert message.startswith(f"label: {out} labels other frames (bytes was")
+        assert sorted(tmp_path.iterdir()) == before  # nothing decoded or written
     assert out.read_text() == HEADER
+
+
+def test_label_refuses_a_directory_csv_of_other_frames_before_writing(
+    tmp_path: Path, monkeypatch
+):
+    def stop(self):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(LabelServer, "serve_forever", stop)
+    source = write_moving_square_clip(tmp_path / "pngs", 5)
+    out = tmp_path / "out" / "clip.csv"
+    run_label(monkeypatch, "--video", str(source), "--out", str(out), "--port", "0")
+    sibling = tmp_path / "out" / "clip.csv.lock"
+    sibling.unlink()
+    (source / "0004.png").unlink()
+    with pytest.raises(SystemExit) as exit_info:
+        run_label(monkeypatch, "--video", str(source), "--out", str(out), "--port", "0")
+    assert "labels other frames (count was 5, is 4" in str(exit_info.value.code)
+    assert not sibling.exists()  # refused before the lock was taken
 
 
 @pytest.mark.parametrize(
@@ -933,10 +1059,6 @@ def test_label_takes_held_out_video_with_final(monkeypatch, tmp_path: Path):
 
 # The page's JavaScript
 
-NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(
-    NODE is None, reason="node is not installed: the page's JavaScript is not tested"
-)
 MATH_SCRIPT = """
 const M = require(process.argv[1]);
 const scales = [0.25, 0.5, 0.7111, 1, 1.5, 3];
@@ -966,19 +1088,24 @@ console.log(JSON.stringify({
 PAGE_TESTS = Path(__file__).parent / "js" / "label_page_test.js"
 
 
-def run_node(*args: str) -> dict:
-    assert NODE is not None
+@pytest.fixture(scope="module")
+def node() -> str:
+    path = shutil.which("node")
+    if path is None:
+        pytest.skip("node is not installed: the page's JavaScript is not tested")
+    return path
+
+
+def run_node(node: str, *args: str) -> dict:
     result = subprocess.run(
-        [NODE, *args], capture_output=True, text=True, timeout=60, check=True
+        [node, *args], capture_output=True, text=True, timeout=60, check=True
     )
     return json.loads(result.stdout)
 
 
 @pytest.fixture(scope="module")
-def js() -> dict:
-    if NODE is None:
-        pytest.skip("node is not installed: the page's JavaScript is not tested")
-    return run_node("-e", MATH_SCRIPT, str(STATIC / "label_math.js"))
+def js(node: str) -> dict:
+    return run_node(node, "-e", MATH_SCRIPT, str(STATIC / "label_math.js"))
 
 
 def test_click_on_a_pixel_centre_labels_that_pixel_at_any_scale(js: dict):
@@ -1003,11 +1130,10 @@ def test_clamp_and_first_unlabelled(js: dict):
     assert js["first"] == [0, 1, -1, -1]
 
 
-@needs_node
-def test_page_script_in_a_stubbed_browser():
+def test_page_script_in_a_stubbed_browser(node: str):
     """tests/js/label_page_test.js: the page's input, timing, saving and drawing
     rules, with a fake clock (see its cases for what each checks)."""
-    results = run_node(str(PAGE_TESTS), str(STATIC))
+    results = run_node(node, str(PAGE_TESTS), str(STATIC))
     failures = "\n\n".join(f"{f['name']}:\n{f['message']}" for f in results["failed"])
     assert not results["failed"], failures
     assert len(results["passed"]) >= 30

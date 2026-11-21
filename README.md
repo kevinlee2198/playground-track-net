@@ -73,6 +73,7 @@ playground-track-net/
   labeling/
     frames.py           # The frames to label: an image directory, or a video decoded once to JPEGs
     store.py            # The label CSV, validated and rewritten atomically after every change
+    files.py            # Atomic, synced file writes and the lock that keeps one run per CSV
     server.py           # Local HTTP server (standard library) behind main.py label
     static/             # index.html and page.js (the labelling page), label_math.js (its pure functions)
   configs/
@@ -93,8 +94,8 @@ playground-track-net/
     test_inference.py   # Postprocess, tracker, video preprocess, streaming read (62 tests)
     test_pipeline.py    # End to end: train, evaluate, check-data, infer (streaming), badminton extract-frames (77 tests)
     test_held_out.py    # The test split and held-out videos need --final; no held-out game in train or val (34 tests)
-    test_hooks.py       # Guard hooks in .claude/hooks/: held-out paths, --final, memory cap (236 tests)
-    test_labeling.py    # Labelling tool: frame preparation, label CSV, HTTP API, main.py label, the page's script via Node (129 tests)
+    test_hooks.py       # Guard hooks in .claude/hooks/: held-out paths, --final, memory cap (237 tests)
+    test_labeling.py    # Labelling tool: frame preparation, label CSV, HTTP API, main.py label, the page's script via Node (139 tests)
     js/label_page_test.js # The page's script in a stubbed browser with a fake clock (run by test_labeling.py)
   docs/
     data-sources.md     # Dataset links, licences, verification log
@@ -124,7 +125,7 @@ playground-track-net/
 | Hand-labelling tool (`main.py label`, local web page) | Done; tried on a synthetic clip only | 129 in `test_labeling.py`, one of which runs 30 cases of the page's script in Node against a stubbed browser (no real browser) |
 | Full training run + published weights | Baseline trained and scored on validation ([results](docs/2026-11-16-training-results.md)); no weights published | — |
 
-**Total: 854 tests (about 115 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
+**Total: 865 tests (about 100 s serially, fully synthetic).** "Done" above means implemented and tested. The tests use synthetic frames only, including a miniature tennis dataset with 1280x720 frames and the real `Label.csv` header, and a miniature badminton dataset of tiny mp4 rally videos written by the tests; `test_pipeline.py` trains, evaluates and runs inference with the real TrackNet at 128x72. They pass on CPU; on a machine with CUDA the Trainer picks the GPU, so the Trainer and pipeline tests run there.
 
 ## Known Issues
 
@@ -286,11 +287,18 @@ scripts/capped.sh uv run python main.py label --video path/to/clip.mp4 --out lab
 # then open the printed URL (http://localhost:8765/) in a browser; Ctrl-C stops the server
 ```
 
-A video is decoded once, in order, into JPEGs next to the CSV (`labels/clip.frames/`, or `--frames-dir`), and the next run reuses them; a directory of images is shown as it is, in name order, and is refused if its names are numbers that are not zero-padded (`1.png ... 10.png` would put 10 before 2). The server binds to 127.0.0.1 only, since the page can change the labels, and answers only requests addressed to `localhost` or `127.0.0.1` on its port; WSL2's localhost forwarding (on by default) lets a Windows browser open it at `localhost`. Every change rewrites the CSV atomically and syncs it to disk before the page is told it is saved, so stopping at any point loses nothing, and running the command again resumes at the first unlabelled frame.
+A video is decoded once, in order, into JPEGs next to the CSV (`labels/clip.frames/`, or `--frames-dir`), and the next run reuses them; a directory of images is shown as it is, in name order, and is refused if its names are numbers, or one prefix and a number, that are not zero-padded (`1.png ... 10.png` or `frame_1.png ... frame_10.png` would put 10 before 2). The server binds to 127.0.0.1 only, since the page can change the labels, and answers only requests addressed to `localhost` or `127.0.0.1` on its port; WSL2's localhost forwarding (on by default) lets a Windows browser open it at `localhost`. Every change rewrites the CSV atomically and syncs it to disk before the page is told it is saved, so stopping at any point loses nothing, and running the command again resumes at the first unlabelled frame.
 
-Two files sit beside the CSV. `labels/clip.csv.source.json` records the frames the CSV labels (for a video: its name, size, modification time and frame count; for a directory: its path and its files' names and sizes), and a later run refuses to resume the CSV on anything else, naming what differs. `labels/clip.csv.lock` is held while the server runs, so a second run on the same CSV stops at once. A tab left open from an earlier run cannot write either: every change carries that run's token, and the page stops with a "reload it" error when the server does not recognise it. Like `infer`, `label` refuses a video in held-out test data (tennis `game8`–`game10`, badminton `Test`) unless the owner passes `--final`.
+Two files sit beside the CSV. `labels/clip.csv.source.json` records the frames the CSV labels (for a video: its name, size, modification time and frame count; for a directory: its path and its files' names and sizes), and a later run refuses to resume the CSV on anything else, naming what differs; this check, and a busy port, fail within a second, before any frame is decoded or anything written. `labels/clip.csv.lock` is held while the server runs, so a second run on the same CSV stops at once. One page writes at a time: each page load takes over writing from the pages loaded before it, and a tab loaded earlier, or left open from an earlier run, stops with "another tab or a newer run has taken over: reload this page" at its next change, saving nothing. Like `infer`, `label` refuses a video in held-out test data (tennis `game8`–`game10`, badminton `Test`) unless the owner passes `--final`.
 
-A frame takes a label only after it has been on screen for 250 ms, and a held key labels one frame; a click or key that comes sooner (the second click of a double click, say) saves nothing, and the status line says why.
+A frame takes a label only after it has been on screen for 250 ms, and a held key labels one frame; a click or key that comes sooner (the second click of a double click, say) saves nothing, and the status line says why. The 250 ms start again when you come back to the window, so if you click the page to come back to it, the click is not taken as a label. A click is refused if the pointer moved more than 2 px between press and release (a drag), and touch is refused: there is no magnifier for it.
+
+Before a long session:
+
+- **Where to click** (this project's convention): a sharp ball, its centre; a motion-blurred streak, the centre of the streak (Shift+click if it is faint); a ball partly cut off by the frame edge, Shift+click on the visible part; a ball hidden behind a player or a post, `U` (cannot tell), so the frame is left out of scoring; a ball out of the frame or not in play, `N`.
+- **The status line**: red means nothing was saved for that input, and says why. An input made while the last change was still being saved is refused, and stays listed in red until your next input. "Failed to fetch" means the server has stopped: run the same command again and reload the page. Every label the page reported as saved is in the CSV, and the page reopens at the first unlabelled frame.
+- Keep `--out` on the Linux disk, not under `/mnt/c`: every save syncs the file and its directory, and locking there is untested.
+- A `<out>.lock` left behind after a crash is harmless. Do not move or re-save the video once labelling has started: the tool refuses to continue against a changed source, and says what differs. Use one tab.
 
 The page shows the frame as large as the window allows, and a magnifier showing the area round the cursor 8 times enlarged, with a crosshair where the click will land. The ball is about 10 px across in 1080p footage and labels are scored at 4 px, so aim with the magnifier.
 
